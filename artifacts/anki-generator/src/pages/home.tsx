@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useLocation } from "wouter";
 import { useGenerateCards } from "@workspace/api-client-react";
 import { Button } from "@/components/ui/button";
@@ -6,13 +6,22 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { FileText, Loader2, UploadCloud } from "lucide-react";
+import { FileText, Loader2, UploadCloud, X, CheckCircle2, AlertCircle } from "lucide-react";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { createWorker } from "tesseract.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+type FileEntry = {
+  id: string;
+  name: string;
+  status: "extracting" | "ready" | "error";
+  text: string;
+  progress: string;
+};
 
 export default function Home() {
   const [, setLocation] = useLocation();
@@ -20,12 +29,21 @@ export default function Home() {
   const generateCards = useGenerateCards();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [text, setText] = useState("");
+  const [manualText, setManualText] = useState("");
   const [deckName, setDeckName] = useState("");
   const [cardCount, setCardCount] = useState<number | "">("");
-  const [fileName, setFileName] = useState("");
-  const [isExtracting, setIsExtracting] = useState(false);
-  const [extractionProgress, setExtractionProgress] = useState("");
+  const [files, setFiles] = useState<FileEntry[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const combinedText = [manualText, ...files.filter(f => f.status === "ready").map(f => f.text)]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const isExtracting = files.some(f => f.status === "extracting");
+
+  const updateFile = (id: string, patch: Partial<FileEntry>) => {
+    setFiles(prev => prev.map(f => f.id === id ? { ...f, ...patch } : f));
+  };
 
   const extractPdfText = async (buffer: ArrayBuffer): Promise<string> => {
     const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer) });
@@ -34,25 +52,21 @@ export default function Home() {
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      const pageText = content.items
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .map((item: any) => (typeof item.str === "string" ? item.str : ""))
-        .join(" ");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pageText = content.items.map((item: any) => (typeof item.str === "string" ? item.str : "")).join(" ");
       pageTexts.push(pageText);
     }
     return pageTexts.join("\n").replace(/\s+/g, " ").trim();
   };
 
-  const ocrPdfPages = async (buffer: ArrayBuffer): Promise<string> => {
+  const ocrPdfPages = async (buffer: ArrayBuffer, id: string, totalPages: number): Promise<string> => {
     const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer) });
     const pdf = await loadingTask.promise;
-    const totalPages = pdf.numPages;
-
     const worker = await createWorker("eng");
     const pageTexts: string[] = [];
 
     for (let i = 1; i <= totalPages; i++) {
-      setExtractionProgress(`Reading page ${i} of ${totalPages} (OCR)…`);
+      updateFile(id, { progress: `OCR page ${i}/${totalPages}…` });
       const page = await pdf.getPage(i);
       const viewport = page.getViewport({ scale: 2.0 });
       const canvas = document.createElement("canvas");
@@ -60,10 +74,7 @@ export default function Home() {
       canvas.height = viewport.height;
       const ctx = canvas.getContext("2d")!;
       await page.render({ canvasContext: ctx, viewport }).promise;
-
-      const blob = await new Promise<Blob>((resolve) =>
-        canvas.toBlob((b) => resolve(b!), "image/png")
-      );
+      const blob = await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), "image/png"));
       const { data } = await worker.recognize(blob);
       pageTexts.push(data.text);
     }
@@ -72,84 +83,73 @@ export default function Home() {
     return pageTexts.join("\n").replace(/\s+/g, " ").trim();
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const processFile = useCallback(async (file: File) => {
+    const id = `${file.name}-${Date.now()}`;
     const isTxt = file.type === "text/plain" || file.name.endsWith(".txt");
     const isPdf = file.type === "application/pdf" || file.name.endsWith(".pdf");
 
     if (!isTxt && !isPdf) {
-      toast({
-        title: "Unsupported file type",
-        description: "Please upload a .txt or .pdf file.",
-        variant: "destructive",
-      });
-      e.target.value = "";
+      toast({ title: "Unsupported file", description: `${file.name} is not a .txt or .pdf file.`, variant: "destructive" });
       return;
     }
 
-    setFileName(file.name);
-    const baseName = file.name.replace(/\.[^.]+$/, "");
-    if (!deckName) setDeckName(baseName);
+    const entry: FileEntry = { id, name: file.name, status: "extracting", text: "", progress: "Reading…" };
+    setFiles(prev => [...prev, entry]);
 
-    if (isTxt) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const content = event.target?.result as string;
-        setText(content);
-        toast({ title: "File loaded", description: `${file.name} ready for processing.` });
-      };
-      reader.readAsText(file);
-    } else if (isPdf) {
-      setIsExtracting(true);
-      setExtractionProgress("Reading PDF…");
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        const buffer = event.target?.result as ArrayBuffer;
-        try {
-          const extracted = await extractPdfText(buffer);
-          if (extracted && extracted.length > 20) {
-            setText(extracted);
-            toast({ title: "PDF loaded", description: `Extracted text from ${file.name}.` });
+    if (!deckName) setDeckName(file.name.replace(/\.[^.]+$/, ""));
+
+    try {
+      if (isTxt) {
+        const text = await file.text();
+        updateFile(id, { status: "ready", text, progress: "" });
+      } else {
+        const buffer = await file.arrayBuffer();
+        updateFile(id, { progress: "Extracting text…" });
+        const extracted = await extractPdfText(buffer);
+
+        if (extracted && extracted.length > 20) {
+          updateFile(id, { status: "ready", text: extracted, progress: "" });
+        } else {
+          updateFile(id, { progress: "Starting OCR…" });
+          const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer) });
+          const pdf = await loadingTask.promise;
+          const ocrText = await ocrPdfPages(buffer, id, pdf.numPages);
+          if (ocrText && ocrText.length > 20) {
+            updateFile(id, { status: "ready", text: ocrText, progress: "" });
           } else {
-            toast({
-              title: "Scanned PDF detected",
-              description: "No text layer found — running OCR. This may take a moment.",
-            });
-            setExtractionProgress("Starting OCR…");
-            const ocrText = await ocrPdfPages(buffer);
-            if (ocrText && ocrText.length > 20) {
-              setText(ocrText);
-              toast({ title: "OCR complete", description: `Text extracted from ${file.name} via OCR.` });
-            } else {
-              toast({
-                title: "Extraction failed",
-                description: "Could not extract any text. Try copy-pasting the content directly.",
-                variant: "destructive",
-              });
-            }
+            updateFile(id, { status: "error", progress: "No text found" });
           }
-        } catch {
-          toast({
-            title: "Extraction error",
-            description: "An error occurred while processing the PDF.",
-            variant: "destructive",
-          });
-        } finally {
-          setIsExtracting(false);
-          setExtractionProgress("");
         }
-      };
-      reader.readAsArrayBuffer(file);
+      }
+    } catch {
+      updateFile(id, { status: "error", progress: "Extraction failed" });
     }
+  }, [deckName, toast]);
 
+  const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = Array.from(e.target.files ?? []);
     e.target.value = "";
+    for (const file of selected) {
+      await processFile(file);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const dropped = Array.from(e.dataTransfer.files);
+    for (const file of dropped) {
+      await processFile(file);
+    }
+  };
+
+  const removeFile = (id: string) => {
+    setFiles(prev => prev.filter(f => f.id !== id));
   };
 
   const handleGenerate = () => {
-    if (!text.trim()) {
-      toast({ title: "Text required", description: "Please paste text or upload a file.", variant: "destructive" });
+    if (!combinedText.trim()) {
+      toast({ title: "No content", description: "Paste text or upload at least one file.", variant: "destructive" });
       return;
     }
     if (!deckName.trim()) {
@@ -158,31 +158,20 @@ export default function Home() {
     }
 
     generateCards.mutate(
-      {
-        data: {
-          text,
-          deckName,
-          cardCount: cardCount ? Number(cardCount) : undefined,
-        },
-      },
+      { data: { text: combinedText, deckName, cardCount: cardCount ? Number(cardCount) : undefined } },
       {
         onSuccess: (data) => {
-          toast({
-            title: "Cards generated!",
-            description: `Successfully created ${data.generatedCount} cards.`,
-          });
+          toast({ title: "Cards generated!", description: `Created ${data.generatedCount} cards.` });
           setLocation(`/decks/${data.deck.id}`);
         },
         onError: () => {
-          toast({
-            title: "Generation failed",
-            description: "There was an error generating your cards. Please try again.",
-            variant: "destructive",
-          });
+          toast({ title: "Generation failed", description: "There was an error generating your cards. Please try again.", variant: "destructive" });
         },
       }
     );
   };
+
+  const readyCount = files.filter(f => f.status === "ready").length;
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center max-w-2xl mx-auto w-full animate-in fade-in duration-500">
@@ -191,51 +180,97 @@ export default function Home() {
           Turn material into mastery.
         </h1>
         <p className="text-muted-foreground text-lg max-w-xl mx-auto">
-          Paste your notes, lectures, or reading material, and AI will instantly generate focused Anki flashcards for your studies.
+          Upload multiple files or paste your notes — AI will instantly generate focused Anki flashcards.
         </p>
       </div>
 
       <Card className="w-full border-border/50 shadow-lg shadow-primary/5">
         <CardHeader>
           <CardTitle>Source Material</CardTitle>
-          <CardDescription>Paste text or upload a document to get started.</CardDescription>
+          <CardDescription>Upload one or more files and/or paste additional text.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="space-y-2">
-            <Textarea
-              placeholder="Paste your study material here..."
-              className="min-h-[200px] resize-none text-base"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              disabled={generateCards.isPending || isExtracting}
-            />
-          </div>
+        <CardContent className="space-y-5">
 
-          <div className="flex items-center gap-4 flex-wrap">
+          {/* Drop zone */}
+          <div
+            className={`relative border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
+              isDragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-muted/30"
+            }`}
+            onClick={() => fileInputRef.current?.click()}
+            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={handleDrop}
+          >
             <input
               ref={fileInputRef}
               type="file"
               className="hidden"
-              onChange={handleFileUpload}
+              onChange={handleFileInput}
               accept=".txt,.pdf"
-              disabled={generateCards.isPending || isExtracting}
+              multiple
+              disabled={generateCards.isPending}
             />
-            <Button
-              type="button"
-              variant="outline"
-              className="flex gap-2 items-center justify-center"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={generateCards.isPending || isExtracting}
-            >
-              {isExtracting ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <UploadCloud className="h-4 w-4" />
-              )}
-              {isExtracting ? extractionProgress || "Processing…" : fileName ? fileName : "Upload File (PDF, TXT)"}
-            </Button>
+            <UploadCloud className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
+            <p className="text-sm font-medium">Drop files here or click to browse</p>
+            <p className="text-xs text-muted-foreground mt-1">Supports PDF and TXT — select multiple files at once</p>
           </div>
 
+          {/* File list */}
+          {files.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-muted-foreground">
+                {readyCount}/{files.length} file{files.length !== 1 ? "s" : ""} ready
+              </p>
+              {files.map(f => (
+                <div key={f.id} className="flex items-center gap-2 px-3 py-2 rounded-md bg-muted/50 border border-border/50">
+                  {f.status === "extracting" && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />}
+                  {f.status === "ready" && <CheckCircle2 className="h-4 w-4 shrink-0 text-green-500" />}
+                  {f.status === "error" && <AlertCircle className="h-4 w-4 shrink-0 text-destructive" />}
+                  <span className="text-sm flex-1 truncate">{f.name}</span>
+                  {f.status === "extracting" && (
+                    <span className="text-xs text-muted-foreground shrink-0">{f.progress}</span>
+                  )}
+                  {f.status === "ready" && (
+                    <Badge variant="secondary" className="text-xs shrink-0">
+                      {(f.text.length / 1000).toFixed(1)}k chars
+                    </Badge>
+                  )}
+                  {f.status === "error" && (
+                    <span className="text-xs text-destructive shrink-0">{f.progress}</span>
+                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); removeFile(f.id); }}
+                    className="ml-1 text-muted-foreground hover:text-foreground shrink-0"
+                    disabled={generateCards.isPending}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Manual text area */}
+          <div className="space-y-1">
+            <Label className="text-sm text-muted-foreground">
+              Additional text {files.length > 0 ? "(optional)" : ""}
+            </Label>
+            <Textarea
+              placeholder="Paste additional study material here..."
+              className="min-h-[140px] resize-none text-base"
+              value={manualText}
+              onChange={(e) => setManualText(e.target.value)}
+              disabled={generateCards.isPending}
+            />
+          </div>
+
+          {combinedText.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Total content: {(combinedText.length / 1000).toFixed(1)}k characters
+            </p>
+          )}
+
+          {/* Deck settings */}
           <div className="grid md:grid-cols-2 gap-4 pt-4 border-t">
             <div className="space-y-2">
               <Label htmlFor="deckName">Deck Name</Label>
@@ -266,17 +301,23 @@ export default function Home() {
             className="w-full py-6 text-lg font-medium"
             size="lg"
             onClick={handleGenerate}
-            disabled={generateCards.isPending || isExtracting || !text.trim() || !deckName.trim()}
+            disabled={generateCards.isPending || isExtracting || !combinedText.trim() || !deckName.trim()}
           >
             {generateCards.isPending ? (
               <>
                 <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                Generating Cards...
+                Generating Cards…
+              </>
+            ) : isExtracting ? (
+              <>
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                Processing Files…
               </>
             ) : (
               <>
                 <FileText className="mr-2 h-5 w-5" />
                 Generate Flashcards
+                {readyCount > 0 && ` from ${readyCount} file${readyCount !== 1 ? "s" : ""}${manualText.trim() ? " + text" : ""}`}
               </>
             )}
           </Button>
