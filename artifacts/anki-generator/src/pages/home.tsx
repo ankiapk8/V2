@@ -20,6 +20,25 @@ type DeckWithParent = Deck & { parentId?: number | null };
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
+function buildParentOptions(allDecks: DeckWithParent[]): { id: number; label: string; depth: number }[] {
+  const roots = allDecks.filter(d => !d.parentId);
+  const byParent = new Map<number, DeckWithParent[]>();
+  allDecks.filter(d => d.parentId).forEach(d => {
+    const pid = d.parentId!;
+    if (!byParent.has(pid)) byParent.set(pid, []);
+    byParent.get(pid)!.push(d);
+  });
+  const result: { id: number; label: string; depth: number }[] = [];
+  function walk(deck: DeckWithParent, label: string, depth: number) {
+    result.push({ id: deck.id, label, depth });
+    for (const child of (byParent.get(deck.id) ?? []).sort((a, b) => a.name.localeCompare(b.name))) {
+      walk(child, `${label} › ${child.name}`, depth + 1);
+    }
+  }
+  for (const d of roots.sort((a, b) => a.name.localeCompare(b.name))) walk(d, d.name, 0);
+  return result;
+}
+
 type FileStatus = "extracting" | "ready" | "error" | "generating" | "done";
 
 type FileEntry = {
@@ -49,7 +68,8 @@ export default function Home() {
   const [isDragging, setIsDragging] = useState(false);
   const [isGeneratingAll, setIsGeneratingAll] = useState(false);
 
-  const topicDecks = ((allDecks as DeckWithParent[]) ?? []).filter(d => !d.parentId);
+  const parentOptions = buildParentOptions((allDecks as DeckWithParent[]) ?? []);
+  const selectedParentOpt = parentOptions.find(o => o.id.toString() === parentId);
   const resolvedParentId = parentId === "none" ? null : parseInt(parentId, 10);
 
   const isExtracting = files.some(f => f.status === "extracting");
@@ -224,33 +244,58 @@ export default function Home() {
       </div>
 
       <div className="w-full space-y-4">
-        {/* Parent topic selector */}
-        {topicDecks.length > 0 && (
-          <Card className="border-border/50 shadow-sm">
-            <CardContent className="pt-4 pb-4">
-              <div className="flex items-center gap-3">
-                <div className="h-8 w-8 rounded-md bg-primary/10 flex items-center justify-center shrink-0">
-                  <FolderOpen className="h-4 w-4 text-primary" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <Label className="text-sm font-medium">Main Topic</Label>
-                  <p className="text-xs text-muted-foreground">Assign all generated decks as sub-decks of a topic</p>
+        {/* Parent deck selector */}
+        <Card className="border-border/50 shadow-sm">
+          <CardContent className="pt-4 pb-4">
+            <div className="flex items-start gap-3">
+              <div className="h-8 w-8 rounded-md bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
+                <FolderOpen className="h-4 w-4 text-primary" />
+              </div>
+              <div className="flex-1 min-w-0 space-y-2">
+                <div>
+                  <Label className="text-sm font-medium">Parent Deck</Label>
+                  <p className="text-xs text-muted-foreground">Generated decks will be nested inside this deck</p>
                 </div>
                 <Select value={parentId} onValueChange={setParentId}>
-                  <SelectTrigger className="w-44 h-8 text-sm">
-                    <SelectValue placeholder="Standalone" />
+                  <SelectTrigger className="h-8 text-sm w-full">
+                    {parentId === "none" || !selectedParentOpt
+                      ? <span className="text-muted-foreground">Standalone (no parent)</span>
+                      : <span className="truncate">{selectedParentOpt.label}</span>
+                    }
                   </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Standalone</SelectItem>
-                    {topicDecks.map(d => (
-                      <SelectItem key={d.id} value={d.id.toString()}>{d.name}</SelectItem>
+                  <SelectContent className="max-h-64">
+                    <SelectItem value="none">Standalone (no parent)</SelectItem>
+                    {parentOptions.map(opt => (
+                      <SelectItem key={opt.id} value={opt.id.toString()} className="py-1.5">
+                        <span className="flex items-center gap-1 min-w-0">
+                          {opt.depth > 0 && (
+                            <span className="text-muted-foreground shrink-0 text-xs font-mono">
+                              {"  ".repeat(opt.depth - 1)}{"└─"}
+                            </span>
+                          )}
+                          <span className="truncate">{opt.label.split(" › ").pop()}</span>
+                          {opt.depth === 0 && (
+                            <span className="text-xs text-muted-foreground ml-1 shrink-0">(topic)</span>
+                          )}
+                        </span>
+                      </SelectItem>
                     ))}
+                    {parentOptions.length === 0 && (
+                      <div className="px-2 py-3 text-sm text-muted-foreground text-center">
+                        No decks yet — generated decks will be standalone
+                      </div>
+                    )}
                   </SelectContent>
                 </Select>
+                {selectedParentOpt && (
+                  <p className="text-xs text-muted-foreground">
+                    Decks will be placed inside <span className="font-medium text-foreground">{selectedParentOpt.label}</span>
+                  </p>
+                )}
               </div>
-            </CardContent>
-          </Card>
-        )}
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Drop zone */}
         <Card className="border-border/50 shadow-lg shadow-primary/5">
