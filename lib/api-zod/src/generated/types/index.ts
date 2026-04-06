@@ -14,3 +14,4 @@ export * from "./generateCardsBody";
 export * from "./generateCardsResponse";
 export * from "./healthStatus";
 export * from "./updateCardBody";
+export * from "./updateDeckBody";

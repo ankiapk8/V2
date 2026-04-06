@@ -7,6 +7,7 @@ import {
   DeleteDeckParams,
   ListDeckCardsParams,
   ExportDeckParams,
+  UpdateDeckBody,
 } from "@workspace/api-zod";
 
 const router: IRouter = Router();
@@ -93,6 +94,46 @@ router.get("/decks/:id", async (req, res): Promise<void> => {
     createdAt: row.createdAt.toISOString(),
     subDecks: subDecks.map(s => ({ ...s, createdAt: s.createdAt.toISOString() })),
   });
+});
+
+router.patch("/decks/:id", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = parseInt(raw, 10);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+  const parsed = UpdateDeckBody.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
+
+  const updates: Record<string, unknown> = {};
+  if (parsed.data.name !== undefined) updates.name = parsed.data.name;
+  if ("description" in parsed.data) updates.description = parsed.data.description;
+  if ("parentId" in parsed.data) updates.parentId = parsed.data.parentId;
+
+  if (Object.keys(updates).length === 0) { res.status(400).json({ error: "No fields to update" }); return; }
+
+  const [updated] = await db
+    .update(decksTable)
+    .set(updates)
+    .where(eq(decksTable.id, id))
+    .returning();
+
+  if (!updated) { res.status(404).json({ error: "Deck not found" }); return; }
+
+  const [row] = await db
+    .select({
+      id: decksTable.id,
+      name: decksTable.name,
+      description: decksTable.description,
+      parentId: decksTable.parentId,
+      createdAt: decksTable.createdAt,
+      cardCount: sql<number>`cast(count(${cardsTable.id}) as int)`,
+    })
+    .from(decksTable)
+    .leftJoin(cardsTable, eq(cardsTable.deckId, decksTable.id))
+    .where(eq(decksTable.id, id))
+    .groupBy(decksTable.id);
+
+  res.json({ ...row, createdAt: row!.createdAt.toISOString() });
 });
 
 router.delete("/decks/:id", async (req, res): Promise<void> => {

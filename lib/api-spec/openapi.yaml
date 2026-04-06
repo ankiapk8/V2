@@ -85,6 +85,33 @@ paths:
                 $ref: "#/components/schemas/Deck"
         "404":
           description: Not found
+    patch:
+      operationId: updateDeck
+      tags: [decks]
+      summary: Update a deck
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDeckBody"
+      responses:
+        "200":
+          description: Updated deck
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deck"
+        "400":
+          description: Bad request
+        "404":
+          description: Not found
     delete:
       operationId: deleteDeck
       tags: [decks]
@@ -270,6 +297,16 @@ components:
         - front
         - back
         - createdAt
+
+    UpdateDeckBody:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: ["string", "null"]
+        parentId:
+          type: ["integer", "null"]
 
     UpdateCardBody:
       type: object

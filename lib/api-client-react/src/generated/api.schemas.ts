@@ -38,6 +38,14 @@ export interface Card {
   createdAt: string;
 }
 
+export interface UpdateDeckBody {
+  name?: string;
+  /** @nullable */
+  description?: string | null;
+  /** @nullable */
+  parentId?: number | null;
+}
+
 export interface UpdateCardBody {
   front?: string;
   back?: string;

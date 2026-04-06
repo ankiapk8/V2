@@ -54,6 +54,28 @@ export const GetDeckResponse = zod.object({
 });
 
 /**
+ * @summary Update a deck
+ */
+export const UpdateDeckParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const UpdateDeckBody = zod.object({
+  name: zod.string().optional(),
+  description: zod.string().nullish(),
+  parentId: zod.number().nullish(),
+});
+
+export const UpdateDeckResponse = zod.object({
+  id: zod.number(),
+  name: zod.string(),
+  description: zod.string().nullish(),
+  parentId: zod.number().nullish(),
+  cardCount: zod.number(),
+  createdAt: zod.string(),
+});
+
+/**
  * @summary Delete a deck
  */
 export const DeleteDeckParams = zod.object({
