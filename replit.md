@@ -32,6 +32,7 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 - Upload files (PDF, TXT) or paste text to generate Anki flashcards via AI
 - Browse and manage decks, edit cards inline, export to CSV for Anki import
 - PDF extraction is handled in `src/lib/pdf-extraction.ts` using PDF.js embedded text first, then OCR fallback for scanned PDFs
+- Safari/iPad compatibility uses a `Promise.withResolvers` polyfill in `src/main.tsx` before loading the app and the legacy PDF.js build
 
 ### API Server (`artifacts/api-server`)
 - Express 5 backend at `/api`
