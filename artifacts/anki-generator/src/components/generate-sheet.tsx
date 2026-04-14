@@ -135,12 +135,9 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
   const resolvedParentId = parentId === "none" ? null : parseInt(parentId, 10);
 
   const generateOne = (text: string, deckName: string, cardCount: number | "", pid: number | null): Promise<number> =>
-    new Promise((resolve, reject) =>
-      generateCards.mutate(
-        { data: { text, deckName, cardCount: cardCount ? Number(cardCount) : undefined, parentId: pid } },
-        { onSuccess: d => resolve(d.generatedCount), onError: reject }
-      )
-    );
+    generateCards.mutateAsync(
+      { data: { text, deckName, cardCount: cardCount ? Number(cardCount) : undefined, parentId: pid } },
+    ).then(d => d.generatedCount);
 
   const handleGenerateAll = async () => {
     setIsGeneratingAll(true);
@@ -184,23 +181,21 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
     setParentId(defaultParentId?.toString() ?? "none");
   };
 
-  const handleCreateEmpty = () => {
+  const handleCreateEmpty = async () => {
     if (!emptyName.trim()) return;
     setIsCreating(true);
     const pid = emptyParentId === "none" ? null : parseInt(emptyParentId, 10);
-    createDeck.mutate(
-      { data: { name: emptyName, description: emptyDesc, parentId: pid } },
-      {
-        onSuccess: () => {
-          queryClient.invalidateQueries({ queryKey: getListDecksQueryKey() });
-          toast({ title: "Deck created." });
-          setEmptyName(""); setEmptyDesc(""); setEmptyParentId("none");
-          setIsCreating(false);
-          onDone?.(); onOpenChange(false);
-        },
-        onError: () => { toast({ title: "Failed to create deck", variant: "destructive" }); setIsCreating(false); },
-      }
-    );
+    try {
+      await createDeck.mutateAsync({ data: { name: emptyName, description: emptyDesc, parentId: pid } });
+      queryClient.invalidateQueries({ queryKey: getListDecksQueryKey() });
+      toast({ title: "Deck created." });
+      setEmptyName(""); setEmptyDesc(""); setEmptyParentId("none");
+      onDone?.(); onOpenChange(false);
+    } catch {
+      toast({ title: "Failed to create deck", variant: "destructive" });
+    } finally {
+      setIsCreating(false);
+    }
   };
 
   const totalTargets = readyFiles.length + (hasManual ? 1 : 0);

@@ -103,33 +103,21 @@ export function DeckFormSheet({ open, onOpenChange, mode, onDone }: DeckFormShee
 
     try {
       if (mode.type === "edit") {
-        await new Promise<void>((resolve, reject) =>
-          updateDeck.mutate(
-            { id: mode.deck.id, data: { name: name.trim(), description: description.trim() || null, parentId: resolvedParentId } },
-            { onSuccess: () => resolve(), onError: reject }
-          )
-        );
+        await updateDeck.mutateAsync({
+          id: mode.deck.id,
+          data: { name: name.trim(), description: description.trim() || null, parentId: resolvedParentId },
+        });
         toast({ title: "Deck updated." });
       } else {
-        const created = await new Promise<DeckWithParent>((resolve, reject) =>
-          createDeck.mutate(
-            { data: { name: name.trim(), description: description.trim() || null, parentId: resolvedParentId } },
-            { onSuccess: d => resolve(d as DeckWithParent), onError: reject }
-          )
-        );
+        const created = await createDeck.mutateAsync({
+          data: { name: name.trim(), description: description.trim() || null, parentId: resolvedParentId },
+        }) as DeckWithParent;
 
         if (mode.type === "new-topic" && subSlots.length > 0) {
           const validSlots = subSlots.filter(s => s.name.trim());
-          await Promise.all(
-            validSlots.map(s =>
-              new Promise<void>((resolve, reject) =>
-                createDeck.mutate(
-                  { data: { name: s.name.trim(), parentId: created.id } },
-                  { onSuccess: () => resolve(), onError: reject }
-                )
-              )
-            )
-          );
+          for (const s of validSlots) {
+            await createDeck.mutateAsync({ data: { name: s.name.trim(), parentId: created.id } });
+          }
           toast({
             title: "Topic created!",
             description: validSlots.length > 0

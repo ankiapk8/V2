@@ -117,14 +117,10 @@ export default function Home() {
 
   const removeFile = (id: string) => setFiles(prev => prev.filter(f => f.id !== id));
 
-  const generateOne = (text: string, deckName: string, cardCount: number | ""): Promise<number> => {
-    return new Promise((resolve, reject) => {
-      generateCards.mutate(
-        { data: { text, deckName, cardCount: cardCount ? Number(cardCount) : undefined, parentId: resolvedParentId } },
-        { onSuccess: (data) => resolve(data.generatedCount), onError: reject }
-      );
-    });
-  };
+  const generateOne = (text: string, deckName: string, cardCount: number | ""): Promise<number> =>
+    generateCards.mutateAsync(
+      { data: { text, deckName, cardCount: cardCount ? Number(cardCount) : undefined, parentId: resolvedParentId } },
+    ).then(data => data.generatedCount);
 
   const handleGenerateAll = async () => {
     setIsGeneratingAll(true);
