@@ -92,7 +92,7 @@ Respond with a JSON array of objects with "front" (question) and "back" (answer)
 
   res.status(201).json({
     deck: { ...deck, cardCount: insertedCards.length, createdAt: deck.createdAt.toISOString() },
-    cards: insertedCards.map(c => ({ ...c, createdAt: c.createdAt.toISOString() })),
+    cards: insertedCards.map((c) => ({ ...c, createdAt: c.createdAt.toISOString() })),
     generatedCount: insertedCards.length,
   });
 });

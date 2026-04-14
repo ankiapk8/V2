@@ -31,7 +31,7 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 - React + Vite web app at `/`
 - Upload files (PDF, TXT) or paste text to generate Anki flashcards via AI
 - Browse and manage decks, edit cards inline, export to CSV for Anki import
-- PDF extraction is handled in `src/lib/pdf-extraction.ts` using PDF.js embedded text first, then OCR fallback for scanned PDFs
+- PDF extraction in `src/lib/pdf-extraction.ts`: embedded text → server OCR (new) → client-side OCR (last resort fallback only when server is unreachable)
 - Safari/iPad compatibility uses a `Promise.withResolvers` polyfill in `src/main.tsx` before loading the app and the legacy PDF.js build
 
 ### API Server (`artifacts/api-server`)
@@ -39,7 +39,9 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 - Routes: `/api/decks`, `/api/cards`, `/api/generate`, `/api/healthz`
 - AI generation uses `gpt-5.2` model via Replit AI Integrations
 - The AI client is loaded lazily so missing AI configuration returns a 503 from `/api/generate` instead of crashing the server
-- Route `/api/extract-pdf` accepts raw PDF uploads and extracts embedded text server-side for Safari/iPad browser fallback
+- Route `/api/extract-pdf` accepts raw PDF uploads; first tries embedded text extraction via pdfjs-dist, then falls back to server-side OCR using `canvas` + `tesseract.js` (enables scanned/image-only PDFs to work on iPad)
+- System dependency `util-linux` (provides `libuuid.so.1`) is required by the `canvas` npm package; installed via Nix
+- `canvas` and `tesseract.js` are listed in `pnpm.onlyBuiltDependencies` in the root `package.json` so their native build scripts run
 
 ## Database Schema
 

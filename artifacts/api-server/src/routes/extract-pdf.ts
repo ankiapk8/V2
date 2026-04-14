@@ -1,6 +1,7 @@
 import express, { Router, type IRouter } from "express";
 import { createCanvas } from "canvas";
 import { createWorker } from "tesseract.js";
+import type { PDFDocumentProxy } from "pdfjs-dist";
 
 const router: IRouter = Router();
 const MIN_TEXT_LENGTH = 20;
@@ -11,14 +12,17 @@ function normalizeText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-async function extractEmbeddedPdfText(buffer: Buffer): Promise<{ text: string; numPages: number }> {
-  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const loadingTask = pdfjsLib.getDocument({
+function pdfDocOptions(buffer: Buffer) {
+  return {
     data: new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength),
     disableWorker: true,
     useSystemFonts: true,
-  });
-  const pdf = await loadingTask.promise;
+  } as unknown as Parameters<(typeof import("pdfjs-dist/legacy/build/pdf.mjs"))["getDocument"]>[0];
+}
+
+async function extractEmbeddedPdfText(buffer: Buffer): Promise<{ text: string; numPages: number }> {
+  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const pdf = await pdfjsLib.getDocument(pdfDocOptions(buffer)).promise;
   const numPages = pdf.numPages;
   const pageTexts: string[] = [];
 
@@ -40,11 +44,7 @@ async function extractEmbeddedPdfText(buffer: Buffer): Promise<{ text: string; n
   return { text: normalizeText(pageTexts.join("\n")), numPages };
 }
 
-async function renderPageToBuffer(
-  pdfjsLib: Awaited<ReturnType<typeof import("pdfjs-dist/legacy/build/pdf.mjs")>>,
-  pdf: Awaited<ReturnType<typeof pdfjsLib.getDocument>["promise"]>,
-  pageNumber: number,
-): Promise<Buffer> {
+async function renderPageToBuffer(pdf: PDFDocumentProxy, pageNumber: number): Promise<Buffer> {
   const page = await pdf.getPage(pageNumber);
   const baseViewport = page.getViewport({ scale: 1 });
   const scale = Math.min(
@@ -56,9 +56,13 @@ async function renderPageToBuffer(
   const height = Math.ceil(viewport.height);
 
   const canvas = createCanvas(width, height);
-  const context = canvas.getContext("2d") as unknown as CanvasRenderingContext2D;
+  const context = canvas.getContext("2d") as unknown;
 
-  await page.render({ canvasContext: context, viewport }).promise;
+  await page.render({
+    canvasContext: context as Parameters<typeof page.render>[0]["canvasContext"],
+    canvas: canvas as never,
+    viewport,
+  }).promise;
   page.cleanup();
 
   return canvas.toBuffer("image/png");
@@ -66,36 +70,13 @@ async function renderPageToBuffer(
 
 async function extractOcrText(buffer: Buffer): Promise<string> {
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-
-  const canvasFactory = {
-    create(width: number, height: number) {
-      const canvas = createCanvas(width, height);
-      const context = canvas.getContext("2d");
-      return { canvas, context };
-    },
-    reset(canvasAndContext: { canvas: ReturnType<typeof createCanvas>; context: unknown }, width: number, height: number) {
-      canvasAndContext.canvas.width = width;
-      canvasAndContext.canvas.height = height;
-    },
-    destroy(canvasAndContext: { canvas: ReturnType<typeof createCanvas>; context: unknown }) {
-      canvasAndContext.canvas.width = 0;
-      canvasAndContext.canvas.height = 0;
-    },
-  };
-
-  const loadingTask = pdfjsLib.getDocument({
-    data: new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength),
-    disableWorker: true,
-    useSystemFonts: true,
-    canvasFactory: canvasFactory as never,
-  });
-  const pdf = await loadingTask.promise;
+  const pdf = await pdfjsLib.getDocument(pdfDocOptions(buffer)).promise;
   const worker = await createWorker("eng");
   const pageTexts: string[] = [];
 
   try {
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
-      const imageBuffer = await renderPageToBuffer(pdfjsLib as never, pdf as never, pageNumber);
+      const imageBuffer = await renderPageToBuffer(pdf, pageNumber);
       const { data } = await worker.recognize(imageBuffer);
       pageTexts.push(data.text);
     }

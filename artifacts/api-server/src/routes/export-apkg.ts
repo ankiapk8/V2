@@ -211,7 +211,7 @@ router.post("/export-apkg", async (req, res): Promise<void> => {
     const entry = ankiDeckIdMap.get(card.deckId);
     if (!entry) continue;
 
-    const baseTags = card.tags ? card.tags.split(/[\s,]+/).map(t => t.trim()).filter(Boolean) : [];
+    const baseTags = card.tags ? card.tags.split(/[\s,]+/).map((t: string) => t.trim()).filter(Boolean) : [];
 
     insertNoteAndCard(sqlDb, {
       front: card.front,

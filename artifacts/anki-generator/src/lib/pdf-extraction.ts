@@ -82,7 +82,7 @@ async function extractClientOcrText(buffer: ArrayBuffer, onProgress?: ProgressCa
         throw new Error("Could not prepare OCR canvas.");
       }
 
-      await page.render({ canvasContext: context, viewport }).promise;
+      await page.render({ canvasContext: context, canvas, viewport }).promise;
       const image = await canvasToBlob(canvas);
       const { data } = await worker.recognize(image);
       pageTexts.push(data.text);
