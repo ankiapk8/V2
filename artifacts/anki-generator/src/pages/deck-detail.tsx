@@ -19,12 +19,16 @@ import { Progress } from "@/components/ui/progress";
 import { 
   ArrowLeft, Download, Trash2, Edit2, Check, X, 
   FileText, BookOpen, Shuffle, ChevronLeft, ChevronRight,
-  RotateCcw, GraduationCap, Eye, Bookmark, Play, Sparkles, Loader2
+  RotateCcw, GraduationCap, Eye, Bookmark, Play, Sparkles, Loader2,
+  Brain, ClipboardList, Stethoscope
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiUrl } from "@/lib/utils";
 import { saveSession, getSavePoint, saveSavePoint, clearSavePoint, type StudySavePoint } from "@/lib/study-stats";
 import type { Card, Deck } from "@workspace/api-client-react/src/generated/api.schemas";
+import { Drawer } from "vaul";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 type DeckWithSubDecks = Deck & { subDecks?: Deck[] };
 
@@ -328,72 +332,6 @@ function StudyMode({ cards, deckId, deckName, onExit, savePoint }: {
                 <p className="text-base sm:text-lg text-foreground leading-relaxed">
                   {current?.back}
                 </p>
-
-                {explanation !== null ? (
-                  <div className="mt-4 rounded-lg bg-primary/5 border border-primary/15 p-4 space-y-3 animate-in fade-in duration-300">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5 text-[10px] font-semibold text-primary uppercase tracking-widest">
-                        <Sparkles className="h-3 w-3" />
-                        {explainMode ? EXPLAIN_LABELS[explainMode] : "AI"}
-                      </div>
-                      {!isExplaining && (
-                        <div className="flex gap-1">
-                          {(["full", "revision", "osce"] as ExplainMode[]).filter(m => m !== explainMode).map(m => (
-                            <Button
-                              key={m}
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleExplain(m)}
-                              className="h-6 text-[10px] px-2 text-muted-foreground hover:text-primary"
-                            >
-                              {m === "full" ? "Full" : m === "revision" ? "Revision" : "OSCE"}
-                            </Button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    {isExplaining && explanation.length === 0 ? (
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
-                      </div>
-                    ) : (
-                      <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">
-                        {explanation}
-                        {isExplaining && <span className="inline-block w-1 h-3.5 bg-primary/60 ml-0.5 animate-pulse rounded-sm" />}
-                      </p>
-                    )}
-                  </div>
-                ) : (
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleExplain("full")}
-                      disabled={isExplaining}
-                      className="gap-1.5 text-xs"
-                    >
-                      <Sparkles className="h-3.5 w-3.5" /> Full Explanation
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleExplain("revision")}
-                      disabled={isExplaining}
-                      className="gap-1.5 text-xs"
-                    >
-                      <FileText className="h-3.5 w-3.5" /> Revision Sheet
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleExplain("osce")}
-                      disabled={isExplaining}
-                      className="gap-1.5 text-xs"
-                    >
-                      <GraduationCap className="h-3.5 w-3.5" /> OSCE Questions
-                    </Button>
-                  </div>
-                )}
               </div>
             ) : (
               <div className="border-t border-dashed border-border/30 p-4 sm:p-6 flex justify-center">
@@ -448,6 +386,123 @@ function StudyMode({ cards, deckId, deckName, onExit, savePoint }: {
           Skip <ChevronRight className="h-4 w-4" />
         </Button>
       </div>
+
+      {revealed && (
+        <div className="rounded-xl border border-border/40 bg-muted/20 p-3">
+          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2.5 flex items-center gap-1.5">
+            <Sparkles className="h-3 w-3" /> AI Tools
+          </p>
+          <div className="grid grid-cols-3 gap-2">
+            <button
+              onClick={() => handleExplain("full")}
+              disabled={isExplaining}
+              className="flex flex-col items-center gap-1.5 rounded-lg border border-border/60 bg-background hover:bg-primary/5 hover:border-primary/30 p-3 transition-all text-center disabled:opacity-50 disabled:cursor-not-allowed group"
+            >
+              <Brain className="h-5 w-5 text-primary group-hover:scale-110 transition-transform" />
+              <span className="text-[11px] font-medium leading-tight text-foreground">Full Explanation</span>
+            </button>
+            <button
+              onClick={() => handleExplain("revision")}
+              disabled={isExplaining}
+              className="flex flex-col items-center gap-1.5 rounded-lg border border-border/60 bg-background hover:bg-primary/5 hover:border-primary/30 p-3 transition-all text-center disabled:opacity-50 disabled:cursor-not-allowed group"
+            >
+              <ClipboardList className="h-5 w-5 text-primary group-hover:scale-110 transition-transform" />
+              <span className="text-[11px] font-medium leading-tight text-foreground">Revision Sheet</span>
+            </button>
+            <button
+              onClick={() => handleExplain("osce")}
+              disabled={isExplaining}
+              className="flex flex-col items-center gap-1.5 rounded-lg border border-border/60 bg-background hover:bg-primary/5 hover:border-primary/30 p-3 transition-all text-center disabled:opacity-50 disabled:cursor-not-allowed group"
+            >
+              <Stethoscope className="h-5 w-5 text-primary group-hover:scale-110 transition-transform" />
+              <span className="text-[11px] font-medium leading-tight text-foreground">OSCE Questions</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      <Drawer.Root
+        open={explanation !== null}
+        onOpenChange={(open) => {
+          if (!open) { setExplanation(null); setExplainMode(null); }
+        }}
+      >
+        <Drawer.Portal>
+          <Drawer.Overlay className="fixed inset-0 bg-black/40 z-40" />
+          <Drawer.Content className="fixed inset-x-0 bottom-0 z-50 flex flex-col rounded-t-2xl bg-background shadow-2xl outline-none" style={{ maxHeight: "88vh" }}>
+            <div className="mx-auto mt-3 mb-1 h-1 w-10 rounded-full bg-muted-foreground/20 shrink-0" />
+
+            <div className="px-4 py-3 border-b border-border/50 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2">
+                {explainMode === "full" && <Brain className="h-4 w-4 text-primary" />}
+                {explainMode === "revision" && <ClipboardList className="h-4 w-4 text-primary" />}
+                {explainMode === "osce" && <Stethoscope className="h-4 w-4 text-primary" />}
+                <span className="font-semibold text-sm text-foreground">
+                  {explainMode ? EXPLAIN_LABELS[explainMode] : "AI Explanation"}
+                </span>
+                {isExplaining && (
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <Loader2 className="h-3 w-3 animate-spin" /> Generating…
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center gap-1">
+                {!isExplaining && (["full", "revision", "osce"] as ExplainMode[]).map(m => (
+                  <button
+                    key={m}
+                    onClick={() => handleExplain(m)}
+                    className={`h-7 px-2.5 rounded-md text-[11px] font-medium transition-colors ${
+                      m === explainMode
+                        ? "bg-primary/10 text-primary"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                    }`}
+                  >
+                    {m === "full" ? "Full" : m === "revision" ? "Revision" : "OSCE"}
+                  </button>
+                ))}
+                <button
+                  onClick={() => { setExplanation(null); setExplainMode(null); }}
+                  className="ml-1 h-7 w-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="px-5 py-5 overflow-y-auto flex-1">
+              {isExplaining && (!explanation || explanation.length === 0) ? (
+                <div className="flex flex-col items-center justify-center gap-3 py-12 text-muted-foreground">
+                  <div className="relative">
+                    <div className="h-10 w-10 rounded-full border-2 border-primary/20 border-t-primary animate-spin" />
+                  </div>
+                  <p className="text-sm">Generating {explainMode ? EXPLAIN_LABELS[explainMode] : "explanation"}…</p>
+                </div>
+              ) : (
+                <div className="prose prose-sm dark:prose-invert max-w-none
+                  prose-headings:font-semibold prose-headings:text-foreground
+                  prose-h1:text-xl prose-h1:mt-6 prose-h1:mb-3
+                  prose-h2:text-lg prose-h2:mt-5 prose-h2:mb-2 prose-h2:border-b prose-h2:border-border/40 prose-h2:pb-1
+                  prose-h3:text-base prose-h3:mt-4 prose-h3:mb-1.5
+                  prose-p:text-foreground prose-p:leading-relaxed prose-p:my-2
+                  prose-strong:text-foreground prose-strong:font-semibold
+                  prose-ul:my-2 prose-li:my-0.5
+                  prose-ol:my-2
+                  prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs
+                  prose-blockquote:border-primary/40 prose-blockquote:text-muted-foreground
+                  prose-hr:border-border/40
+                ">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {explanation ?? ""}
+                  </ReactMarkdown>
+                  {isExplaining && (
+                    <span className="inline-block w-1.5 h-4 bg-primary/60 ml-0.5 animate-pulse rounded-sm align-middle" />
+                  )}
+                </div>
+              )}
+            </div>
+          </Drawer.Content>
+        </Drawer.Portal>
+      </Drawer.Root>
     </div>
   );
 }
