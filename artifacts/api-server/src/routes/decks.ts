@@ -164,17 +164,21 @@ router.delete("/decks/:id", async (req, res, next): Promise<void> => {
   }
 
   try {
-    await db
-      .update(decksTable)
-      .set({ parentId: null })
-      .where(eq(decksTable.parentId, params.data.id));
+    const allDecks = await db.select({ id: decksTable.id, parentId: decksTable.parentId }).from(decksTable);
 
-    const [deleted] = await db
+    function collectDescendants(parentId: number): number[] {
+      const direct = allDecks.filter(d => d.parentId === parentId).map(d => d.id);
+      return [...direct, ...direct.flatMap(collectDescendants)];
+    }
+
+    const idsToDelete = [params.data.id, ...collectDescendants(params.data.id)];
+
+    const deleted = await db
       .delete(decksTable)
-      .where(eq(decksTable.id, params.data.id))
-      .returning();
+      .where(inArray(decksTable.id, idsToDelete))
+      .returning({ id: decksTable.id });
 
-    if (!deleted) {
+    if (deleted.length === 0) {
       res.status(404).json({ error: "Deck not found" });
       return;
     }

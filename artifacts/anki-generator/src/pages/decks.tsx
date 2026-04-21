@@ -53,7 +53,7 @@ function DeckRow({
   openDeckForm, handleDelete,
 }: DeckRowProps) {
   const children = (deckChildrenMap.get(deck.id) ?? []).sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" })
   );
   const hasChildren = children.length > 0;
   const isCollapsed = collapsedIds.has(deck.id);
@@ -309,7 +309,7 @@ export default function Decks() {
 
   const { rootDecks, deckChildrenMap } = useMemo(() => {
     const all = (decks as DeckWithParent[] | undefined) ?? [];
-    const root = all.filter(d => !d.parentId).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const root = all.filter(d => !d.parentId).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
     const byParent = new Map<number, DeckWithParent[]>();
     all.filter(d => d.parentId).forEach(d => {
       const pid = d.parentId!;
@@ -338,7 +338,18 @@ export default function Decks() {
 
   const handleDelete = (id: number, e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation();
-    if (!confirm("Delete this deck? Child decks will become standalone.")) return;
+    const all = (decks as DeckWithParent[] | undefined) ?? [];
+    function collectDescendants(pid: number): DeckWithParent[] {
+      const direct = all.filter(d => d.parentId === pid);
+      return [...direct, ...direct.flatMap(d => collectDescendants(d.id))];
+    }
+    const descendants = collectDescendants(id);
+    const target = all.find(d => d.id === id);
+    const totalCards = (target?.cardCount ?? 0) + descendants.reduce((s, d) => s + d.cardCount, 0);
+    const msg = descendants.length > 0
+      ? `Delete "${target?.name}" and ALL ${descendants.length} sub-deck${descendants.length !== 1 ? "s" : ""} inside it?\n\nThis will permanently remove ${totalCards} card${totalCards !== 1 ? "s" : ""}. This cannot be undone.`
+      : `Delete "${target?.name}"? This will permanently remove ${totalCards} card${totalCards !== 1 ? "s" : ""}. This cannot be undone.`;
+    if (!confirm(msg)) return;
     deleteDeck.mutate({ id }, {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: getListDecksQueryKey() });
