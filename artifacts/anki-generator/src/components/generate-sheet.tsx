@@ -11,9 +11,27 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { Progress } from "@/components/ui/progress";
 import { UploadCloud, X, CheckCircle2, AlertCircle, Loader2, FileText, Sparkles, FolderOpen, ImageIcon } from "lucide-react";
 import { extractPdf, isPdfFile, isTextFile } from "@/lib/pdf-extraction";
 import type { Deck } from "@workspace/api-client-react/src/generated/api.schemas";
+
+function parseProgressPercent(message: string): number | null {
+  const match = message.match(/(\d+)\s*\/\s*(\d+)/);
+  if (!match) return null;
+  const current = parseInt(match[1], 10);
+  const total = parseInt(match[2], 10);
+  if (!total) return null;
+  return Math.round((current / total) * 100);
+}
+
+function getProgressPhase(message: string): "text" | "images" | "ocr" | "server" | "other" {
+  if (message.startsWith("Extracting page")) return "text";
+  if (message.startsWith("Capturing page")) return "images";
+  if (message.startsWith("OCR page")) return "ocr";
+  if (message.includes("server") || message.includes("Server")) return "server";
+  return "other";
+}
 
 type FileStatus = "extracting" | "ready" | "error" | "generating" | "done";
 
@@ -307,7 +325,17 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
             </div>
 
             {/* File entries */}
-            {files.map(f => (
+            {files.map(f => {
+              const extractPercent = f.status === "extracting" ? parseProgressPercent(f.progress) : null;
+              const extractPhase = f.status === "extracting" ? getProgressPhase(f.progress) : null;
+              const phaseLabel =
+                extractPhase === "text" ? "Reading text" :
+                extractPhase === "images" ? "Capturing screenshots" :
+                extractPhase === "ocr" ? "Running OCR" :
+                extractPhase === "server" ? "Server extraction" :
+                f.progress || "Processing…";
+
+              return (
               <Card key={f.id} className="border-border/50">
                 <CardContent className="p-3 space-y-2">
                   <div className="flex items-center gap-2">
@@ -317,7 +345,6 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
                     {f.status === "done"       && <Sparkles className="h-4 w-4 shrink-0 text-green-500" />}
                     {f.status === "error"      && <AlertCircle className="h-4 w-4 shrink-0 text-destructive" />}
                     <span className="text-sm font-medium flex-1 truncate">{f.name}</span>
-                    {f.status === "extracting" && <span className="text-xs text-muted-foreground shrink-0">{f.progress}</span>}
                     {f.status === "ready"      && (
                       <div className="flex items-center gap-1 shrink-0">
                         <Badge variant="secondary" className="text-xs">{(f.text.length / 1000).toFixed(1)}k chars</Badge>
@@ -335,6 +362,38 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
                       <X className="h-3.5 w-3.5" />
                     </button>
                   </div>
+
+                  {f.status === "extracting" && (
+                    <div className="space-y-1 pt-0.5">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[11px] text-muted-foreground">{phaseLabel}</span>
+                        {extractPercent !== null && (
+                          <span className="text-[11px] text-muted-foreground font-medium">{extractPercent}%</span>
+                        )}
+                      </div>
+                      {extractPercent !== null ? (
+                        <Progress value={extractPercent} className="h-1.5" />
+                      ) : (
+                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                          <div className="h-full w-1/3 rounded-full bg-primary/50 animate-[shimmer_1.2s_ease-in-out_infinite]"
+                            style={{ animation: "shimmer 1.2s ease-in-out infinite", backgroundImage: "linear-gradient(90deg, transparent 0%, hsl(var(--primary)/0.5) 50%, transparent 100%)", backgroundSize: "200% 100%" }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {f.status === "generating" && (
+                    <div className="space-y-1 pt-0.5">
+                      <span className="text-[11px] text-muted-foreground">AI is generating flashcards…</span>
+                      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                        <div className="h-full rounded-full bg-primary/60"
+                          style={{ width: "60%", animation: "pulse 1.5s ease-in-out infinite" }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   {(f.status === "ready" || f.status === "error") && (
                     <div className="grid grid-cols-2 gap-2">
                       <div className="space-y-1">
@@ -349,7 +408,8 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
                   )}
                 </CardContent>
               </Card>
-            ))}
+              );
+            })}
 
             {/* Manual text */}
             <div className="space-y-1.5">
