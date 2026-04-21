@@ -186,6 +186,7 @@ async function generateAllVisualCards(
   openai: Awaited<ReturnType<typeof getOpenAIClient>>,
   images: string[],
   requestLog: { warn: (obj: unknown, message: string) => void },
+  onBatchGroupDone?: (doneBatches: number, totalBatches: number) => void,
 ): Promise<{ front: string; back: string; image: string }[]> {
   const pagesToProcess = images.slice(0, MAX_VISUAL_PAGES);
   const batches: { start: number; imgs: string[] }[] = [];
@@ -195,6 +196,7 @@ async function generateAllVisualCards(
   }
 
   const results: { front: string; back: string; image: string }[] = [];
+  let doneBatches = 0;
 
   for (let i = 0; i < batches.length; i += VISUAL_CONCURRENCY) {
     const chunk = batches.slice(i, i + VISUAL_CONCURRENCY);
@@ -214,11 +216,139 @@ async function generateAllVisualCards(
       if (r.status === "fulfilled") results.push(...r.value);
     }
 
+    doneBatches += chunk.length;
+    onBatchGroupDone?.(doneBatches, batches.length);
+
     if (i + VISUAL_CONCURRENCY < batches.length) await sleep(500);
   }
 
   return results;
 }
+
+function sseEmit(res: import("express").Response, event: Record<string, unknown>) {
+  res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+router.post("/generate/stream", async (req, res, next): Promise<void> => {
+  const parsed = GenerateCardsBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+
+  const { text, deckName, cardCount = 20, parentId, pageImages } = parsed.data;
+
+  if (!text || text.trim().length < 10) {
+    res.status(400).json({ error: "Text is too short to generate cards from." });
+    return;
+  }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+
+  const maxCards = Math.min(Math.max(cardCount, 1), 200);
+  const selectedImages = Array.isArray(pageImages) && pageImages.length > 0
+    ? pageImages.slice(0, MAX_PAGE_IMAGES)
+    : [];
+  const hasImages = selectedImages.length > 0;
+
+  sseEmit(res, { type: "progress", percent: 5, message: "Connecting to AI…" });
+
+  let openai: Awaited<ReturnType<typeof getOpenAIClient>>;
+  try {
+    openai = await getOpenAIClient();
+  } catch (error) {
+    sseEmit(res, { type: "error", message: error instanceof Error ? error.message : "AI not configured." });
+    res.end();
+    return;
+  }
+
+  sseEmit(res, { type: "progress", percent: 12, message: "Generating text cards…" });
+
+  const TEXT_DONE_PERCENT = hasImages ? 40 : 82;
+  const VISUAL_START = 42;
+  const VISUAL_END = 85;
+
+  let textCards: RawCard[] = [];
+  let visualCards: { front: string; back: string; image: string }[] = [];
+
+  try {
+    const textPromise = generateTextCards(openai, text, maxCards, req.log).then(cards => {
+      textCards = cards;
+      sseEmit(res, { type: "progress", percent: TEXT_DONE_PERCENT, message: `Text cards done (${cards.length} generated)` });
+    });
+
+    const visualPromise = hasImages
+      ? generateAllVisualCards(openai, selectedImages, req.log, (done, total) => {
+          const frac = done / total;
+          const pct = Math.round(VISUAL_START + frac * (VISUAL_END - VISUAL_START));
+          const pages = Math.min(done * VISUAL_BATCH_SIZE, selectedImages.length);
+          sseEmit(res, { type: "progress", percent: pct, message: `Analyzing images… (${pages}/${selectedImages.length} pages)` });
+        }).then(cards => { visualCards = cards; })
+      : Promise.resolve();
+
+    await Promise.all([textPromise, visualPromise]);
+  } catch (error) {
+    req.log.error({ err: error }, "SSE AI card generation failed");
+    const status = getErrorStatus(error);
+    const code = getErrorCode(error);
+    if (status === 429 || code === "too_many_requests") {
+      sseEmit(res, { type: "error", message: "AI is temporarily rate-limited. Wait a minute and try again." });
+    } else {
+      sseEmit(res, { type: "error", message: error instanceof Error ? error.message : "AI card generation failed." });
+    }
+    res.end();
+    return;
+  }
+
+  sseEmit(res, { type: "progress", percent: 90, message: "Saving cards to database…" });
+
+  try {
+    const [deck] = await db
+      .insert(decksTable)
+      .values({ name: deckName, parentId: parentId ?? null })
+      .returning();
+
+    const allCards = [
+      ...textCards
+        .filter(c => typeof c.front === "string" && typeof c.back === "string")
+        .map(c => ({
+          deckId: deck.id,
+          front: c.front.trim(),
+          back: c.back.trim(),
+          image: null as string | null,
+        })),
+      ...visualCards
+        .filter(c => c.front.length > 0 && c.back.length > 0)
+        .map(c => ({
+          deckId: deck.id,
+          front: c.front,
+          back: c.back,
+          image: c.image.startsWith("data:") ? c.image : `data:image/jpeg;base64,${c.image}`,
+        })),
+    ].filter(c => c.front.length > 0 && c.back.length > 0);
+
+    if (allCards.length === 0) {
+      sseEmit(res, { type: "error", message: "AI did not return any usable cards." });
+      res.end();
+      return;
+    }
+
+    const insertedCards = await db.insert(cardsTable).values(allCards).returning();
+
+    sseEmit(res, {
+      type: "done",
+      percent: 100,
+      generatedCount: insertedCards.length,
+      deck: { ...deck, cardCount: insertedCards.length, createdAt: deck.createdAt.toISOString() },
+    });
+    res.end();
+  } catch (err) {
+    next(err);
+  }
+});
 
 router.post("/generate", async (req, res, next): Promise<void> => {
   const parsed = GenerateCardsBody.safeParse(req.body);

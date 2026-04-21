@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useGenerateCards, useCreateDeck, useListDecks, getListDecksQueryKey } from "@workspace/api-client-react";
+import { useCreateDeck, useListDecks, getListDecksQueryKey } from "@workspace/api-client-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -45,6 +45,8 @@ type FileEntry = {
   deckName: string;
   cardCount: number | "";
   generatedCount?: number;
+  generatingPercent?: number;
+  generatingMessage?: string;
 };
 
 type DeckWithParent = Deck & { parentId?: number | null };
@@ -85,7 +87,6 @@ function buildParentOptions(allDecks: DeckWithParent[]): { id: number; label: st
 export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: GenerateSheetProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const generateCards = useGenerateCards();
   const createDeck = useCreateDeck();
   const { data: allDecks } = useListDecks();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -184,10 +185,61 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
     return "Generation failed";
   };
 
-  const generateOne = (text: string, deckName: string, cardCount: number | "", pid: number | null, pageImages?: string[]): Promise<number> =>
-    generateCards.mutateAsync(
-      { data: { text, deckName, cardCount: cardCount ? Number(cardCount) : undefined, parentId: pid, pageImages: pageImages && pageImages.length > 0 ? pageImages : undefined } },
-    ).then(d => d.generatedCount);
+  const generateOne = (text: string, deckName: string, cardCount: number | "", pid: number | null, pageImages?: string[], fileId?: string): Promise<number> =>
+    new Promise((resolve, reject) => {
+      const body = JSON.stringify({
+        text, deckName,
+        cardCount: cardCount ? Number(cardCount) : undefined,
+        parentId: pid,
+        pageImages: pageImages && pageImages.length > 0 ? pageImages : undefined,
+      });
+
+      fetch(apiUrl("api/generate/stream"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      }).then(async resp => {
+        if (!resp.ok || !resp.body) {
+          const err = await resp.json().catch(() => ({}));
+          reject(new Error((err as { error?: string }).error ?? "Generation failed"));
+          return;
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.startsWith("data:")) continue;
+            try {
+              const event = JSON.parse(line.slice(5).trim()) as {
+                type: string; percent?: number; message?: string; generatedCount?: number;
+              };
+              if (event.type === "progress" && fileId) {
+                setFiles(prev => prev.map(f =>
+                  f.id === fileId
+                    ? { ...f, generatingPercent: event.percent, generatingMessage: event.message }
+                    : f
+                ));
+              } else if (event.type === "done") {
+                resolve(event.generatedCount ?? 0);
+                return;
+              } else if (event.type === "error") {
+                reject(new Error(event.message ?? "Generation failed"));
+                return;
+              }
+            } catch { continue; }
+          }
+        }
+        reject(new Error("Stream ended unexpectedly"));
+      }).catch(reject);
+    });
 
   const handleGenerateAll = async () => {
     setIsGeneratingAll(true);
@@ -204,9 +256,9 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
         setIsGeneratingAll(false);
         return;
       }
-      if (t.id) updateFile(t.id, { status: "generating", progress: "Generating…" });
+      if (t.id) updateFile(t.id, { status: "generating", progress: "Generating…", generatingPercent: 0, generatingMessage: "Starting…" });
       try {
-        const count = await generateOne(t.text, t.deckName, t.cardCount, resolvedParentId, t.pageImages);
+        const count = await generateOne(t.text, t.deckName, t.cardCount, resolvedParentId, t.pageImages, t.id);
         if (t.id) updateFile(t.id, { status: "done", progress: "", generatedCount: count });
         ok++;
       } catch (error) {
@@ -399,12 +451,15 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
 
                   {f.status === "generating" && (
                     <div className="space-y-1 pt-0.5">
-                      <span className="text-[11px] text-muted-foreground">AI is generating flashcards…</span>
-                      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                        <div className="h-full rounded-full bg-primary/60"
-                          style={{ width: "60%", animation: "pulse 1.5s ease-in-out infinite" }}
-                        />
+                      <div className="flex justify-between items-center">
+                        <span className="text-[11px] text-muted-foreground truncate pr-2">
+                          {f.generatingMessage ?? "Generating…"}
+                        </span>
+                        <span className="text-[11px] font-medium text-primary shrink-0">
+                          {f.generatingPercent ?? 0}%
+                        </span>
                       </div>
+                      <Progress value={f.generatingPercent ?? 0} className="h-1.5" />
                     </div>
                   )}
 
