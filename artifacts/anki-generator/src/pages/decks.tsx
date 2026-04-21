@@ -260,7 +260,35 @@ export default function Decks() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [exportingAll, setExportingAll] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
+
+  const handleExportAllJson = async () => {
+    setExportingAll(true);
+    try {
+      const resp = await fetch(apiUrl("api/export-all-json"));
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error ?? "Export failed.");
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const stamp = new Date().toISOString().slice(0, 10);
+      const a = Object.assign(document.createElement("a"), {
+        href: url,
+        download: `ankigen-library-${stamp}.ankigen.json`,
+      });
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast({ title: "Library exported", description: "All main topics saved to a single JSON file." });
+    } catch (err) {
+      toast({ title: "Export failed", description: err instanceof Error ? err.message : "Something went wrong.", variant: "destructive" });
+    } finally {
+      setExportingAll(false);
+    }
+  };
 
   const handleImportJson = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -431,15 +459,39 @@ export default function Decks() {
                   <CheckSquare className="h-4 w-4" /> Select
                 </Button>
               )}
-              <Button
-                variant="outline"
-                className="gap-2"
-                onClick={() => importInputRef.current?.click()}
-                disabled={importing}
-                title="Import a deck from another device (.ankigen.json)"
-              >
-                <Upload className="h-4 w-4" /> {importing ? "Importing…" : "Import"}
-              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" className="gap-2" disabled={importing || exportingAll}>
+                    <Upload className="h-4 w-4" />
+                    Transfer
+                    <ChevronDown className="h-3.5 w-3.5 opacity-70" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-64">
+                  <DropdownMenuItem
+                    className="gap-2.5 cursor-pointer"
+                    onClick={() => importInputRef.current?.click()}
+                  >
+                    <Upload className="h-4 w-4 text-primary" />
+                    <div>
+                      <div className="text-sm font-medium">{importing ? "Importing…" : "Import deck file…"}</div>
+                      <div className="text-xs text-muted-foreground">Upload a .ankigen.json file</div>
+                    </div>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="gap-2.5 cursor-pointer"
+                    onClick={handleExportAllJson}
+                    disabled={exportingAll || ((decks as DeckWithParent[])?.length ?? 0) === 0}
+                  >
+                    <Download className="h-4 w-4 text-blue-500" />
+                    <div>
+                      <div className="text-sm font-medium">{exportingAll ? "Exporting…" : "Export all main topics"}</div>
+                      <div className="text-xs text-muted-foreground">All decks &amp; cards in one JSON file</div>
+                    </div>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <input
                 ref={importInputRef}
                 type="file"
