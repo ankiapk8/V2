@@ -20,7 +20,7 @@ import {
   ArrowLeft, Download, Trash2, Edit2, Check, X, 
   FileText, BookOpen, Shuffle, ChevronLeft, ChevronRight,
   RotateCcw, GraduationCap, Eye, Bookmark, Play, Sparkles, Loader2,
-  Brain, ClipboardList, Stethoscope, ChevronDown, FileJson, Package, ImageIcon
+  Brain, ClipboardList, Stethoscope, ChevronDown, FileJson, Package, ImageIcon, ZoomIn, XCircle
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -81,6 +81,7 @@ function StudyMode({ cards, deckId, deckName, onExit, savePoint }: {
   const [explanation, setExplanation] = useState<string | null>(null);
   const [explainMode, setExplainMode] = useState<ExplainMode | null>(null);
   const [isExplaining, setIsExplaining] = useState(false);
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
 
   const EXPLAIN_LABELS: Record<ExplainMode, string> = {
     full: "Full Explanation",
@@ -212,6 +213,7 @@ function StudyMode({ cards, deckId, deckName, onExit, savePoint }: {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setLightboxSrc(null); return; }
       if (e.key === " " || e.key === "Enter") { e.preventDefault(); if (!revealed) setRevealed(true); else markKnown(); }
       if (e.key === "ArrowRight") { e.preventDefault(); goNext(); }
       if (e.key === "ArrowLeft") { e.preventDefault(); goPrev(); }
@@ -273,6 +275,26 @@ function StudyMode({ cards, deckId, deckName, onExit, savePoint }: {
   }
 
   return (
+    <>
+    {lightboxSrc && (
+      <div
+        className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 animate-in fade-in duration-150"
+        onClick={() => setLightboxSrc(null)}
+      >
+        <button
+          className="absolute top-4 right-4 text-white/70 hover:text-white transition-colors"
+          onClick={() => setLightboxSrc(null)}
+        >
+          <XCircle className="h-8 w-8" />
+        </button>
+        <img
+          src={lightboxSrc}
+          alt="Expanded view"
+          className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl"
+          onClick={e => e.stopPropagation()}
+        />
+      </div>
+    )}
     <div className="space-y-6 animate-in fade-in duration-300">
       <div className="flex items-center justify-between">
         <Button variant="ghost" size="sm" onClick={handleSaveAndExit} className="gap-1.5 text-muted-foreground">
@@ -316,12 +338,20 @@ function StudyMode({ cards, deckId, deckName, onExit, savePoint }: {
                 Front
               </div>
               {(current as Card & { image?: string | null })?.image && (
-                <div className="mb-4 rounded-lg overflow-hidden border border-border/40 bg-background">
+                <div
+                  className="mb-4 rounded-lg overflow-hidden border border-border/40 bg-background relative group/img cursor-zoom-in"
+                  onClick={() => setLightboxSrc((current as Card & { image?: string | null }).image!)}
+                >
                   <img
                     src={(current as Card & { image?: string | null }).image!}
                     alt="Card visual"
                     className="w-full h-auto max-h-72 object-contain"
                   />
+                  <div className="absolute inset-0 bg-black/0 group-hover/img:bg-black/20 transition-colors flex items-center justify-center">
+                    <div className="opacity-0 group-hover/img:opacity-100 transition-opacity bg-black/60 text-white rounded-full p-2">
+                      <ZoomIn className="h-5 w-5" />
+                    </div>
+                  </div>
                 </div>
               )}
               <p className="text-lg sm:text-xl font-medium text-foreground leading-relaxed flex-1">
@@ -510,6 +540,7 @@ function StudyMode({ cards, deckId, deckName, onExit, savePoint }: {
         </Drawer.Portal>
       </Drawer.Root>
     </div>
+    </>
   );
 }
 
