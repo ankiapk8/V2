@@ -18,9 +18,13 @@ import {
 import { GenerateSheet } from "@/components/generate-sheet";
 import { DeckFormSheet, type DeckFormMode } from "@/components/deck-form-sheet";
 import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import {
   Trash2, Layers, Plus, Download, CheckSquare, X, Search,
   FileText, FolderOpen, ChevronDown, ChevronRight, Pencil,
-  Sparkles, BookOpen, Upload,
+  Sparkles, BookOpen, Upload, Combine,
 } from "lucide-react";
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useToast } from "@/hooks/use-toast";
@@ -271,6 +275,10 @@ export default function Decks() {
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [exportingAll, setExportingAll] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeName, setMergeName] = useState("");
+  const [mergeDeleteOriginals, setMergeDeleteOriginals] = useState(false);
+  const [merging, setMerging] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
 
   const handleExportAllJson = async () => {
@@ -413,6 +421,52 @@ export default function Decks() {
   };
 
   const exitSelectMode = () => { setSelectMode(false); setSelectedIds(new Set()); };
+
+  const openMergeDialog = () => {
+    if (selectedIds.size < 2) return;
+    const selectedDecks = (decks as DeckWithParent[] | undefined)?.filter(d => selectedIds.has(d.id)) ?? [];
+    const suggested = selectedDecks.length > 0
+      ? `${selectedDecks[0].name} + ${selectedDecks.length - 1} more`
+      : "Merged Deck";
+    setMergeName(suggested);
+    setMergeDeleteOriginals(false);
+    setMergeOpen(true);
+  };
+
+  const handleMerge = async () => {
+    const name = mergeName.trim();
+    if (!name) {
+      toast({ title: "Name required", description: "Give the merged deck a name.", variant: "destructive" });
+      return;
+    }
+    setMerging(true);
+    try {
+      const resp = await fetch(apiUrl("api/decks/merge"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          deckIds: Array.from(selectedIds),
+          newDeckName: name,
+          deleteOriginals: mergeDeleteOriginals,
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error ?? "Merge failed.");
+      queryClient.invalidateQueries({ queryKey: getListDecksQueryKey() });
+      toast({
+        title: "Decks merged",
+        description: `“${data.name}” created with ${data.cardCount} card${data.cardCount === 1 ? "" : "s"}${
+          mergeDeleteOriginals ? `. ${selectedIds.size} original deck${selectedIds.size === 1 ? "" : "s"} removed.` : "."
+        }`,
+      });
+      setMergeOpen(false);
+      exitSelectMode();
+    } catch (err) {
+      toast({ title: "Merge failed", description: err instanceof Error ? err.message : "Something went wrong.", variant: "destructive" });
+    } finally {
+      setMerging(false);
+    }
+  };
 
   const handleExportApkg = async () => {
     if (selectedIds.size === 0) return;
@@ -657,10 +711,22 @@ export default function Decks() {
                 <CheckSquare className="h-3.5 w-3.5" />
               </div>
               <span className="text-sm font-medium">
-                {selectedIds.size === 0 ? "Select decks to export" : `${selectedIds.size} deck${selectedIds.size !== 1 ? "s" : ""} selected`}
+                {selectedIds.size === 0
+                  ? "Select decks to export or merge"
+                  : `${selectedIds.size} deck${selectedIds.size !== 1 ? "s" : ""} selected`}
               </span>
             </div>
             <div className="h-5 w-px bg-border" />
+            <Button
+              variant="outline"
+              onClick={openMergeDialog}
+              disabled={selectedIds.size < 2 || merging}
+              className="gap-2"
+              title={selectedIds.size < 2 ? "Select at least 2 decks to merge" : "Merge selected decks"}
+            >
+              <Combine className="h-4 w-4" />
+              Merge
+            </Button>
             <Button onClick={handleExportApkg} disabled={selectedIds.size === 0 || exporting} className="gap-2 shadow-sm">
               <Download className="h-4 w-4" />
               {exporting ? "Exporting…" : "Export .apkg"}
@@ -668,6 +734,71 @@ export default function Decks() {
           </div>
         </div>
       )}
+
+      <Dialog open={mergeOpen} onOpenChange={setMergeOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Combine className="h-5 w-5 text-primary" />
+              Merge {selectedIds.size} deck{selectedIds.size !== 1 ? "s" : ""}
+            </DialogTitle>
+            <DialogDescription>
+              Combines every card from the selected decks (and their sub-decks) into one new deck.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="mergeName">New deck name</Label>
+              <Input
+                id="mergeName"
+                value={mergeName}
+                onChange={e => setMergeName(e.target.value)}
+                placeholder="e.g. Combined Study Deck"
+                disabled={merging}
+              />
+            </div>
+
+            <div className="rounded-lg border bg-muted/30 p-3 max-h-40 overflow-y-auto">
+              <p className="text-xs font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">Sources</p>
+              <ul className="text-sm space-y-1">
+                {((decks as DeckWithParent[] | undefined) ?? [])
+                  .filter(d => selectedIds.has(d.id))
+                  .map(d => (
+                    <li key={d.id} className="flex items-center justify-between gap-2">
+                      <span className="truncate">{d.name}</span>
+                      <span className="text-xs text-muted-foreground shrink-0">
+                        {d.cardCount} card{d.cardCount !== 1 ? "s" : ""}
+                      </span>
+                    </li>
+                  ))}
+              </ul>
+            </div>
+
+            <label className="flex items-start gap-2.5 text-sm cursor-pointer rounded-lg border p-3 hover:bg-muted/30 transition-colors">
+              <Checkbox
+                checked={mergeDeleteOriginals}
+                onCheckedChange={v => setMergeDeleteOriginals(v === true)}
+                disabled={merging}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="font-medium block">Delete original decks after merging</span>
+                <span className="text-xs text-muted-foreground">
+                  Removes the source decks and any sub-decks they contain. Cannot be undone.
+                </span>
+              </span>
+            </label>
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setMergeOpen(false)} disabled={merging}>Cancel</Button>
+            <Button onClick={handleMerge} disabled={merging || !mergeName.trim()}>
+              {merging ? "Merging…" : "Merge decks"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

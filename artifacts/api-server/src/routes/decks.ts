@@ -155,6 +155,110 @@ router.patch("/decks/:id", async (req, res, next): Promise<void> => {
   }
 });
 
+router.post("/decks/merge", async (req, res, next): Promise<void> => {
+  const body = req.body as {
+    deckIds?: unknown;
+    newDeckName?: unknown;
+    parentId?: unknown;
+    deleteOriginals?: unknown;
+  };
+
+  const deckIds = Array.isArray(body.deckIds)
+    ? body.deckIds.map(v => Number(v)).filter(n => Number.isInteger(n) && n > 0)
+    : [];
+  const newDeckName = typeof body.newDeckName === "string" ? body.newDeckName.trim() : "";
+  const parentId =
+    typeof body.parentId === "number" && Number.isInteger(body.parentId) ? body.parentId : null;
+  const deleteOriginals = body.deleteOriginals === true;
+
+  if (deckIds.length < 2) {
+    res.status(400).json({ error: "Select at least two decks to merge." });
+    return;
+  }
+  if (!newDeckName) {
+    res.status(400).json({ error: "A name for the merged deck is required." });
+    return;
+  }
+
+  try {
+    const allDecks = await db.select().from(decksTable);
+    const byId = new Map(allDecks.map(d => [d.id, d] as const));
+    const childrenByParent = new Map<number, number[]>();
+    for (const d of allDecks) {
+      if (d.parentId == null) continue;
+      const arr = childrenByParent.get(d.parentId) ?? [];
+      arr.push(d.id);
+      childrenByParent.set(d.parentId, arr);
+    }
+
+    function collectIds(rootId: number, acc: Set<number>) {
+      if (acc.has(rootId)) return;
+      acc.add(rootId);
+      for (const c of childrenByParent.get(rootId) ?? []) collectIds(c, acc);
+    }
+
+    const sourceIds = new Set<number>();
+    for (const id of deckIds) {
+      if (!byId.has(id)) {
+        res.status(404).json({ error: `Deck ${id} not found.` });
+        return;
+      }
+      collectIds(id, sourceIds);
+    }
+
+    if (parentId !== null && sourceIds.has(parentId)) {
+      res.status(400).json({ error: "Cannot place the merged deck inside a deck that's being merged." });
+      return;
+    }
+
+    const sourceCards = await db
+      .select()
+      .from(cardsTable)
+      .where(inArray(cardsTable.deckId, Array.from(sourceIds)))
+      .orderBy(cardsTable.createdAt);
+
+    if (sourceCards.length === 0) {
+      res.status(400).json({ error: "Selected decks contain no cards to merge." });
+      return;
+    }
+
+    const [mergedDeck] = await db
+      .insert(decksTable)
+      .values({
+        name: newDeckName,
+        description: `Merged from ${deckIds.length} deck${deckIds.length === 1 ? "" : "s"}: ${deckIds
+          .map(id => byId.get(id)?.name ?? `#${id}`)
+          .join(", ")}`,
+        parentId,
+      })
+      .returning();
+
+    await db.insert(cardsTable).values(
+      sourceCards.map(c => ({
+        deckId: mergedDeck.id,
+        front: c.front,
+        back: c.back,
+        tags: c.tags,
+        image: c.image,
+      })),
+    );
+
+    if (deleteOriginals) {
+      await db.delete(decksTable).where(inArray(decksTable.id, deckIds));
+    }
+
+    res.status(201).json({
+      ...mergedDeck,
+      cardCount: sourceCards.length,
+      createdAt: mergedDeck.createdAt.toISOString(),
+      mergedDeckCount: deckIds.length,
+      deletedOriginals: deleteOriginals,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.delete("/decks/:id", async (req, res, next): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = DeleteDeckParams.safeParse({ id: parseInt(raw, 10) });
