@@ -10,9 +10,9 @@ type ProgressCallback = (message: string) => void;
 const MIN_TEXT_LENGTH = 20;
 const MAX_OCR_DIMENSION = 2200;
 const SERVER_EXTRACT_URL = apiUrl("api/extract-pdf");
-const CLIENT_MAX_PAGES = 200;
+const CLIENT_MAX_PAGES = Number.MAX_SAFE_INTEGER;
 const SERVER_THRESHOLD_BYTES = 20 * 1024 * 1024;
-const MAX_IMAGE_PAGES = 200;
+const MAX_IMAGE_PAGES = Number.MAX_SAFE_INTEGER;
 const IMAGE_WIDTH = 1100;
 const IMAGE_QUALITY = 0.85;
 

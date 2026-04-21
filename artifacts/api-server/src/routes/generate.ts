@@ -5,9 +5,10 @@ import { createCanvas, loadImage } from "canvas";
 
 const router: IRouter = Router();
 
-const MAX_PAGE_IMAGES = 200;
+const MAX_PAGE_IMAGES = Number.MAX_SAFE_INTEGER;
 const VISUAL_BATCH_SIZE = 6;
-const MAX_VISUAL_PAGES = 200;
+const MAX_VISUAL_PAGES = Number.MAX_SAFE_INTEGER;
+const MAX_CARD_TARGET = Number.MAX_SAFE_INTEGER;
 const CROP_PADDING = 0.06;
 const VISUAL_CONCURRENCY = 2;
 
@@ -390,9 +391,9 @@ router.post("/generate/stream", async (req, res, next): Promise<void> => {
   const wantText = deckType === "text" || deckType === "both";
   const wantVisual = (deckType === "visual" || deckType === "both") && hasImages;
 
-  const maxTextCards = wantText ? Math.min(Math.max(cardCount, 1), 500) : 0;
+  const maxTextCards = wantText ? Math.max(cardCount, 1) : 0;
   const maxVisualCards = wantVisual
-    ? Math.min(Math.max(visualCardCount ?? cardCount, 1), 500)
+    ? Math.max(visualCardCount ?? cardCount, 1)
     : 0;
 
   sseEmit(res, { type: "progress", percent: 5, message: "Connecting to AI…" });
@@ -564,8 +565,8 @@ router.post("/generate", async (req, res, next): Promise<void> => {
   const deckType = resolveDeckType(rawDeckType, hasImages);
   const wantText = deckType === "text" || deckType === "both";
   const wantVisual = (deckType === "visual" || deckType === "both") && hasImages;
-  const maxTextCards = wantText ? Math.min(Math.max(cardCount, 1), 500) : 0;
-  const maxVisualCards = wantVisual ? Math.min(Math.max(visualCardCount ?? cardCount, 1), 500) : 0;
+  const maxTextCards = wantText ? Math.max(cardCount, 1) : 0;
+  const maxVisualCards = wantVisual ? Math.max(visualCardCount ?? cardCount, 1) : 0;
 
   let openai: Awaited<ReturnType<typeof getOpenAIClient>>;
   try {
