@@ -136,7 +136,24 @@ export const DeleteCardParams = zod.object({
 export const GenerateCardsBody = zod.object({
   text: zod.string(),
   deckName: zod.string(),
-  cardCount: zod.number().optional(),
+  cardCount: zod
+    .number()
+    .optional()
+    .describe(
+      'Target text card count (used when deckType is \"text\" or \"both\")',
+    ),
+  visualCardCount: zod
+    .number()
+    .optional()
+    .describe(
+      'Target visual card count (used when deckType is \"visual\" or \"both\")',
+    ),
+  deckType: zod
+    .enum(["text", "visual", "both"])
+    .optional()
+    .describe(
+      "Whether to create a text-only deck, a visual deck, or both as separate decks",
+    ),
   parentId: zod.number().nullish(),
   pageImages: zod.array(zod.string()).optional(),
 });

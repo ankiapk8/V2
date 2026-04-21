@@ -9,7 +9,8 @@ import type { Card } from "./card";
 import type { Deck } from "./deck";
 
 export interface GenerateCardsResponse {
-  deck: Deck;
+  deck?: Deck;
+  visualDeck?: Deck;
   cards: Card[];
   generatedCount: number;
 }

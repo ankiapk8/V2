@@ -5,11 +5,17 @@
  * API specification for Anki Card Generator
  * OpenAPI spec version: 0.1.0
  */
+import type { GenerateCardsBodyDeckType } from "./generateCardsBodyDeckType";
 
 export interface GenerateCardsBody {
   text: string;
   deckName: string;
+  /** Target text card count (used when deckType is "text" or "both") */
   cardCount?: number;
+  /** Target visual card count (used when deckType is "visual" or "both") */
+  visualCardCount?: number;
+  /** Whether to create a text-only deck, a visual deck, or both as separate decks */
+  deckType?: GenerateCardsBodyDeckType;
   /** @nullable */
   parentId?: number | null;
   pageImages?: string[];

@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db, decksTable, cardsTable } from "@workspace/db";
 import { GenerateCardsBody } from "@workspace/api-zod";
+import { createCanvas, loadImage } from "canvas";
 
 const router: IRouter = Router();
 
@@ -83,7 +84,57 @@ async function getOpenAIClient() {
 }
 
 type RawCard = { front: string; back: string };
-type VisualRawCard = { pageIndex: number; front: string; back: string };
+type Bbox = { x: number; y: number; w: number; h: number };
+type VisualRawCard = { pageIndex: number; front: string; back: string; bbox?: Bbox };
+
+function clamp01(n: unknown, fallback: number): number {
+  const v = typeof n === "number" && Number.isFinite(n) ? n : fallback;
+  return Math.max(0, Math.min(1, v));
+}
+
+function normalizeBbox(raw: unknown): Bbox | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  // Support {x,y,w,h} or {x,y,width,height} or [x,y,w,h]
+  let x: unknown, y: unknown, w: unknown, h: unknown;
+  if (Array.isArray(raw) && raw.length === 4) {
+    [x, y, w, h] = raw;
+  } else {
+    x = r.x;
+    y = r.y;
+    w = r.w ?? r.width;
+    h = r.h ?? r.height;
+  }
+  if ([x, y, w, h].some(v => typeof v !== "number")) return null;
+  const bbox: Bbox = {
+    x: clamp01(x, 0),
+    y: clamp01(y, 0),
+    w: clamp01(w, 1),
+    h: clamp01(h, 1),
+  };
+  if (bbox.w < 0.05 || bbox.h < 0.05) return null;
+  if (bbox.x + bbox.w > 1) bbox.w = 1 - bbox.x;
+  if (bbox.y + bbox.h > 1) bbox.h = 1 - bbox.y;
+  return bbox;
+}
+
+async function cropImage(dataUrlOrB64: string, bbox: Bbox | null): Promise<string> {
+  const src = dataUrlOrB64.startsWith("data:") ? dataUrlOrB64 : `data:image/jpeg;base64,${dataUrlOrB64}`;
+  if (!bbox) return src;
+  try {
+    const img = await loadImage(src);
+    const sx = Math.round(bbox.x * img.width);
+    const sy = Math.round(bbox.y * img.height);
+    const sw = Math.max(1, Math.round(bbox.w * img.width));
+    const sh = Math.max(1, Math.round(bbox.h * img.height));
+    const canvas = createCanvas(sw, sh);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+    return canvas.toDataURL("image/jpeg", 0.85);
+  } catch {
+    return src;
+  }
+}
 
 async function generateTextCards(
   openai: Awaited<ReturnType<typeof getOpenAIClient>>,
@@ -124,6 +175,7 @@ async function generateVisualCardsForBatch(
   openai: Awaited<ReturnType<typeof getOpenAIClient>>,
   batchImages: string[],
   batchStart: number,
+  cardsPerPage: number,
   requestLog: { warn: (obj: unknown, message: string) => void },
 ): Promise<VisualRawCard[]> {
   type ContentPart =
@@ -138,21 +190,25 @@ async function generateVisualCardsForBatch(
     },
   }));
 
+  const cardsRange = cardsPerPage <= 1 ? "1" : `1–${cardsPerPage}`;
+
   const systemPrompt = `You are an expert Anki flashcard creator working from PDF page images. You will receive ${batchImages.length} page image(s) (pages ${batchStart + 1}–${batchStart + batchImages.length}).
 
-For EACH page, generate 1–3 high-quality flashcards. Be generous: even pages that are mostly text usually contain at least one labelled figure, diagram, table, chart, photo, scan, anatomical illustration, X-ray, CT/MRI, ECG, histology slide, dermatology photo, flowchart, algorithm, graph, equation, or important highlighted concept worth a card.
+For EACH page, generate ${cardsRange} high-quality VISUAL flashcards focused on diagrams, figures, illustrations, charts, scans, anatomical drawings, X-rays, CT/MRI, ECGs, histology slides, dermatology photos, flowcharts, algorithms, graphs, equations, or labelled visuals.
+
+For each card, you MUST identify the specific region of the page that contains the relevant visual content, and return a NORMALIZED bounding box for cropping. Coordinates are 0..1 where (0,0) is the TOP-LEFT of the page and (1,1) is the BOTTOM-RIGHT.
 
 Card guidelines:
-- If the page contains a meaningful visual (diagram, chart, illustration, scan, etc.), prioritize asking the learner to identify, interpret, or label what is shown in that visual.
-- If the page is purely text but contains key concepts, still generate cards from those concepts.
-- Only skip a page if it is completely blank, just a title page, or contains no learnable content at all.
+- Prioritize asking the learner to identify, interpret, or label what is shown in the visual.
 - Cards must be self-contained and specific. Avoid trivially obvious questions.
 - Keep answers concise and accurate.
+- Skip a page only if it contains no meaningful visual content.
 
 Return ONLY a JSON array. Each item must have exactly:
 - "pageIndex": integer (0-based index within the images you received, so 0 = first image in this batch)
 - "front": string (question)
 - "back": string (answer)
+- "bbox": object with numeric "x", "y", "w", "h" all between 0 and 1, tightly cropped around the visual element. Include a small margin (~3%) around the figure. If the entire page is the visual, use {"x":0,"y":0,"w":1,"h":1}.
 
 No markdown, no explanation, just the JSON array.`;
 
@@ -166,7 +222,7 @@ No markdown, no explanation, just the JSON array.`;
         {
           role: "user",
           content: [
-            { type: "text" as const, text: `Here are the ${batchImages.length} page image(s) for pages ${batchStart + 1}–${batchStart + batchImages.length}. Generate visual flashcards:` },
+            { type: "text" as const, text: `Here are the ${batchImages.length} page image(s) for pages ${batchStart + 1}–${batchStart + batchImages.length}. Generate visual flashcards with tight bounding boxes:` },
             ...imageUrls,
           ],
         },
@@ -175,9 +231,9 @@ No markdown, no explanation, just the JSON array.`;
 
     const raw = (response as { choices: Array<{ message: { content: string | null } }> })
       .choices[0]?.message?.content ?? "[]";
-    return parseJson<VisualRawCard>(raw).filter(
-      c => typeof c.pageIndex === "number" && typeof c.front === "string" && typeof c.back === "string"
-    );
+    return parseJson<VisualRawCard>(raw)
+      .filter(c => typeof c.pageIndex === "number" && typeof c.front === "string" && typeof c.back === "string")
+      .map(c => ({ ...c, bbox: normalizeBbox(c.bbox) ?? undefined }));
   } catch {
     return [];
   }
@@ -186,6 +242,7 @@ No markdown, no explanation, just the JSON array.`;
 async function generateAllVisualCards(
   openai: Awaited<ReturnType<typeof getOpenAIClient>>,
   images: string[],
+  targetCount: number | undefined,
   requestLog: { warn: (obj: unknown, message: string) => void },
   onBatchGroupDone?: (doneBatches: number, totalBatches: number) => void,
 ): Promise<{ front: string; back: string; image: string }[]> {
@@ -196,21 +253,30 @@ async function generateAllVisualCards(
     batches.push({ start: i, imgs: pagesToProcess.slice(i, i + VISUAL_BATCH_SIZE) });
   }
 
+  // Compute cards per page from target
+  const cardsPerPage = targetCount && targetCount > 0
+    ? Math.max(1, Math.min(3, Math.ceil(targetCount / pagesToProcess.length)))
+    : 2;
+
   const results: { front: string; back: string; image: string }[] = [];
   let doneBatches = 0;
 
   for (let i = 0; i < batches.length; i += VISUAL_CONCURRENCY) {
     const chunk = batches.slice(i, i + VISUAL_CONCURRENCY);
     const settled = await Promise.allSettled(
-      chunk.map(b => generateVisualCardsForBatch(openai, b.imgs, b.start, requestLog).then(cards =>
-        cards
-          .filter(c => c.pageIndex >= 0 && c.pageIndex < b.imgs.length)
-          .map(c => ({
+      chunk.map(b => generateVisualCardsForBatch(openai, b.imgs, b.start, cardsPerPage, requestLog).then(async cards => {
+        const out: { front: string; back: string; image: string }[] = [];
+        for (const c of cards) {
+          if (c.pageIndex < 0 || c.pageIndex >= b.imgs.length) continue;
+          const cropped = await cropImage(b.imgs[c.pageIndex], c.bbox ?? null);
+          out.push({
             front: c.front.trim(),
             back: c.back.trim(),
-            image: b.imgs[c.pageIndex],
-          }))
-      ))
+            image: cropped,
+          });
+        }
+        return out;
+      }))
     );
 
     for (const r of settled) {
@@ -223,11 +289,23 @@ async function generateAllVisualCards(
     if (i + VISUAL_CONCURRENCY < batches.length) await sleep(500);
   }
 
+  // If a target was given, trim down
+  if (targetCount && targetCount > 0 && results.length > targetCount) {
+    return results.slice(0, targetCount);
+  }
   return results;
 }
 
 function sseEmit(res: import("express").Response, event: Record<string, unknown>) {
   res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+type DeckType = "text" | "visual" | "both";
+
+function resolveDeckType(input: unknown, hasImages: boolean): DeckType {
+  const t = input === "text" || input === "visual" || input === "both" ? input : "both";
+  if (!hasImages && t !== "text") return "text";
+  return t;
 }
 
 router.post("/generate/stream", async (req, res, next): Promise<void> => {
@@ -237,7 +315,7 @@ router.post("/generate/stream", async (req, res, next): Promise<void> => {
     return;
   }
 
-  const { text, deckName, cardCount = 20, parentId, pageImages } = parsed.data;
+  const { text, deckName, cardCount = 20, visualCardCount, parentId, pageImages, deckType: rawDeckType } = parsed.data;
 
   if (!text || text.trim().length < 10) {
     res.status(400).json({ error: "Text is too short to generate cards from." });
@@ -249,11 +327,18 @@ router.post("/generate/stream", async (req, res, next): Promise<void> => {
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
 
-  const maxCards = Math.min(Math.max(cardCount, 1), 200);
   const selectedImages = Array.isArray(pageImages) && pageImages.length > 0
     ? pageImages.slice(0, MAX_PAGE_IMAGES)
     : [];
   const hasImages = selectedImages.length > 0;
+  const deckType = resolveDeckType(rawDeckType, hasImages);
+  const wantText = deckType === "text" || deckType === "both";
+  const wantVisual = (deckType === "visual" || deckType === "both") && hasImages;
+
+  const maxTextCards = wantText ? Math.min(Math.max(cardCount, 1), 200) : 0;
+  const maxVisualCards = wantVisual
+    ? Math.min(Math.max(visualCardCount ?? cardCount, 1), 200)
+    : 0;
 
   sseEmit(res, { type: "progress", percent: 5, message: "Connecting to AI…" });
 
@@ -266,27 +351,29 @@ router.post("/generate/stream", async (req, res, next): Promise<void> => {
     return;
   }
 
-  sseEmit(res, { type: "progress", percent: 12, message: "Generating text cards…" });
+  sseEmit(res, { type: "progress", percent: 12, message: wantText ? "Generating text cards…" : "Analyzing pages…" });
 
-  const TEXT_DONE_PERCENT = hasImages ? 40 : 82;
-  const VISUAL_START = 42;
+  const TEXT_DONE_PERCENT = wantVisual ? 40 : 82;
+  const VISUAL_START = wantText ? 42 : 15;
   const VISUAL_END = 85;
 
   let textCards: RawCard[] = [];
   let visualCards: { front: string; back: string; image: string }[] = [];
 
   try {
-    const textPromise = generateTextCards(openai, text, maxCards, req.log).then(cards => {
-      textCards = cards;
-      sseEmit(res, { type: "progress", percent: TEXT_DONE_PERCENT, message: `Text cards done (${cards.length} generated)` });
-    });
+    const textPromise = wantText
+      ? generateTextCards(openai, text, maxTextCards, req.log).then(cards => {
+          textCards = cards;
+          sseEmit(res, { type: "progress", percent: TEXT_DONE_PERCENT, message: `Text cards done (${cards.length} generated)` });
+        })
+      : Promise.resolve();
 
-    const visualPromise = hasImages
-      ? generateAllVisualCards(openai, selectedImages, req.log, (done, total) => {
+    const visualPromise = wantVisual
+      ? generateAllVisualCards(openai, selectedImages, maxVisualCards, req.log, (done, total) => {
           const frac = done / total;
           const pct = Math.round(VISUAL_START + frac * (VISUAL_END - VISUAL_START));
           const pages = Math.min(done * VISUAL_BATCH_SIZE, selectedImages.length);
-          sseEmit(res, { type: "progress", percent: pct, message: `Analyzing images… (${pages}/${selectedImages.length} pages)` });
+          sseEmit(res, { type: "progress", percent: pct, message: `Analyzing & cropping images… (${pages}/${selectedImages.length} pages)` });
         }).then(cards => { visualCards = cards; })
       : Promise.resolve();
 
@@ -307,43 +394,74 @@ router.post("/generate/stream", async (req, res, next): Promise<void> => {
   sseEmit(res, { type: "progress", percent: 90, message: "Saving cards to database…" });
 
   try {
-    const [deck] = await db
-      .insert(decksTable)
-      .values({ name: deckName, parentId: parentId ?? null })
-      .returning();
+    const filteredText = textCards
+      .filter(c => typeof c.front === "string" && typeof c.back === "string")
+      .map(c => ({ front: c.front.trim(), back: c.back.trim() }))
+      .filter(c => c.front.length > 0 && c.back.length > 0);
 
-    const allCards = [
-      ...textCards
-        .filter(c => typeof c.front === "string" && typeof c.back === "string")
-        .map(c => ({
-          deckId: deck.id,
-          front: c.front.trim(),
-          back: c.back.trim(),
-          image: null as string | null,
-        })),
-      ...visualCards
-        .filter(c => c.front.length > 0 && c.back.length > 0)
-        .map(c => ({
-          deckId: deck.id,
-          front: c.front,
-          back: c.back,
-          image: c.image.startsWith("data:") ? c.image : `data:image/jpeg;base64,${c.image}`,
-        })),
-    ].filter(c => c.front.length > 0 && c.back.length > 0);
+    const filteredVisual = visualCards
+      .filter(c => c.front.length > 0 && c.back.length > 0);
 
-    if (allCards.length === 0) {
+    if (filteredText.length === 0 && filteredVisual.length === 0) {
       sseEmit(res, { type: "error", message: "AI did not return any usable cards." });
       res.end();
       return;
     }
 
-    const insertedCards = await db.insert(cardsTable).values(allCards).returning();
+    let textDeck: typeof decksTable.$inferSelect | null = null;
+    let visualDeck: typeof decksTable.$inferSelect | null = null;
+    let totalInserted = 0;
+
+    const wantTextDeck = wantText && filteredText.length > 0;
+    const wantVisualDeck = wantVisual && filteredVisual.length > 0;
+    const splitting = wantTextDeck && wantVisualDeck;
+
+    if (wantTextDeck) {
+      const name = splitting ? `${deckName} – Text` : deckName;
+      const [d] = await db
+        .insert(decksTable)
+        .values({ name, parentId: parentId ?? null })
+        .returning();
+      textDeck = d;
+      const inserted = await db.insert(cardsTable).values(
+        filteredText.map(c => ({ deckId: d.id, front: c.front, back: c.back, image: null }))
+      ).returning();
+      totalInserted += inserted.length;
+    }
+
+    if (wantVisualDeck) {
+      const name = splitting ? `${deckName} – Visual` : deckName;
+      const [d] = await db
+        .insert(decksTable)
+        .values({ name, parentId: parentId ?? null })
+        .returning();
+      visualDeck = d;
+      const inserted = await db.insert(cardsTable).values(
+        filteredVisual.map(c => ({
+          deckId: d.id,
+          front: c.front,
+          back: c.back,
+          image: c.image.startsWith("data:") ? c.image : `data:image/jpeg;base64,${c.image}`,
+        }))
+      ).returning();
+      totalInserted += inserted.length;
+    }
+
+    const primaryDeck = textDeck ?? visualDeck;
+    if (!primaryDeck) {
+      sseEmit(res, { type: "error", message: "Failed to save deck." });
+      res.end();
+      return;
+    }
 
     sseEmit(res, {
       type: "done",
       percent: 100,
-      generatedCount: insertedCards.length,
-      deck: { ...deck, cardCount: insertedCards.length, createdAt: deck.createdAt.toISOString() },
+      generatedCount: totalInserted,
+      deck: { ...primaryDeck, cardCount: totalInserted, createdAt: primaryDeck.createdAt.toISOString() },
+      ...(textDeck && visualDeck
+        ? { visualDeck: { ...visualDeck, cardCount: filteredVisual.length, createdAt: visualDeck.createdAt.toISOString() } }
+        : {}),
     });
     res.end();
   } catch (err) {
@@ -358,17 +476,22 @@ router.post("/generate", async (req, res, next): Promise<void> => {
     return;
   }
 
-  const { text, deckName, cardCount = 20, parentId, pageImages } = parsed.data;
+  const { text, deckName, cardCount = 20, visualCardCount, parentId, pageImages, deckType: rawDeckType } = parsed.data;
 
   if (!text || text.trim().length < 10) {
     res.status(400).json({ error: "Text is too short to generate cards from." });
     return;
   }
 
-  const maxCards = Math.min(Math.max(cardCount, 1), 200);
   const selectedImages = Array.isArray(pageImages) && pageImages.length > 0
     ? pageImages.slice(0, MAX_PAGE_IMAGES)
     : [];
+  const hasImages = selectedImages.length > 0;
+  const deckType = resolveDeckType(rawDeckType, hasImages);
+  const wantText = deckType === "text" || deckType === "both";
+  const wantVisual = (deckType === "visual" || deckType === "both") && hasImages;
+  const maxTextCards = wantText ? Math.min(Math.max(cardCount, 1), 200) : 0;
+  const maxVisualCards = wantVisual ? Math.min(Math.max(visualCardCount ?? cardCount, 1), 200) : 0;
 
   let openai: Awaited<ReturnType<typeof getOpenAIClient>>;
   try {
@@ -384,10 +507,8 @@ router.post("/generate", async (req, res, next): Promise<void> => {
 
   try {
     [textCards, visualCards] = await Promise.all([
-      generateTextCards(openai, text, maxCards, req.log),
-      selectedImages.length > 0
-        ? generateAllVisualCards(openai, selectedImages, req.log)
-        : Promise.resolve([]),
+      wantText ? generateTextCards(openai, text, maxTextCards, req.log) : Promise.resolve([] as RawCard[]),
+      wantVisual ? generateAllVisualCards(openai, selectedImages, maxVisualCards, req.log) : Promise.resolve([]),
     ]);
   } catch (error) {
     req.log.error({ err: error }, "AI card generation failed");
@@ -401,47 +522,64 @@ router.post("/generate", async (req, res, next): Promise<void> => {
     return;
   }
 
-  if (textCards.length === 0 && visualCards.length === 0) {
+  const filteredText = textCards
+    .filter(c => typeof c.front === "string" && typeof c.back === "string")
+    .map(c => ({ front: c.front.trim(), back: c.back.trim() }))
+    .filter(c => c.front.length > 0 && c.back.length > 0);
+  const filteredVisual = visualCards.filter(c => c.front.length > 0 && c.back.length > 0);
+
+  if (filteredText.length === 0 && filteredVisual.length === 0) {
     res.status(500).json({ error: "AI did not generate any cards." });
     return;
   }
 
   try {
-    const [deck] = await db
-      .insert(decksTable)
-      .values({ name: deckName, parentId: parentId ?? null })
-      .returning();
+    let textDeck: typeof decksTable.$inferSelect | null = null;
+    let visualDeck: typeof decksTable.$inferSelect | null = null;
+    const allInserted: (typeof cardsTable.$inferSelect)[] = [];
 
-    const allCards = [
-      ...textCards
-        .filter(c => typeof c.front === "string" && typeof c.back === "string")
-        .map(c => ({
-          deckId: deck.id,
-          front: c.front.trim(),
-          back: c.back.trim(),
-          image: null as string | null,
-        })),
-      ...visualCards
-        .filter(c => c.front.length > 0 && c.back.length > 0)
-        .map(c => ({
-          deckId: deck.id,
+    const wantTextDeck = wantText && filteredText.length > 0;
+    const wantVisualDeck = wantVisual && filteredVisual.length > 0;
+    const splitting = wantTextDeck && wantVisualDeck;
+
+    if (wantTextDeck) {
+      const name = splitting ? `${deckName} – Text` : deckName;
+      const [d] = await db.insert(decksTable).values({ name, parentId: parentId ?? null }).returning();
+      textDeck = d;
+      const inserted = await db.insert(cardsTable).values(
+        filteredText.map(c => ({ deckId: d.id, front: c.front, back: c.back, image: null }))
+      ).returning();
+      allInserted.push(...inserted);
+    }
+
+    if (wantVisualDeck) {
+      const name = splitting ? `${deckName} – Visual` : deckName;
+      const [d] = await db.insert(decksTable).values({ name, parentId: parentId ?? null }).returning();
+      visualDeck = d;
+      const inserted = await db.insert(cardsTable).values(
+        filteredVisual.map(c => ({
+          deckId: d.id,
           front: c.front,
           back: c.back,
           image: c.image.startsWith("data:") ? c.image : `data:image/jpeg;base64,${c.image}`,
-        })),
-    ].filter(c => c.front.length > 0 && c.back.length > 0);
+        }))
+      ).returning();
+      allInserted.push(...inserted);
+    }
 
-    if (allCards.length === 0) {
-      res.status(500).json({ error: "AI returned cards without usable fronts and backs." });
+    const primaryDeck = textDeck ?? visualDeck;
+    if (!primaryDeck) {
+      res.status(500).json({ error: "Failed to save deck." });
       return;
     }
 
-    const insertedCards = await db.insert(cardsTable).values(allCards).returning();
-
     res.status(201).json({
-      deck: { ...deck, cardCount: insertedCards.length, createdAt: deck.createdAt.toISOString() },
-      cards: insertedCards.map(c => ({ ...c, createdAt: c.createdAt.toISOString() })),
-      generatedCount: insertedCards.length,
+      deck: { ...primaryDeck, cardCount: allInserted.filter(c => c.deckId === primaryDeck.id).length, createdAt: primaryDeck.createdAt.toISOString() },
+      ...(textDeck && visualDeck
+        ? { visualDeck: { ...visualDeck, cardCount: filteredVisual.length, createdAt: visualDeck.createdAt.toISOString() } }
+        : {}),
+      cards: allInserted.map(c => ({ ...c, createdAt: c.createdAt.toISOString() })),
+      generatedCount: allInserted.length,
     });
   } catch (err) {
     next(err);

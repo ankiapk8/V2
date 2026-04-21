@@ -329,6 +329,14 @@ components:
           type: string
         cardCount:
           type: integer
+          description: Target text card count (used when deckType is "text" or "both")
+        visualCardCount:
+          type: integer
+          description: Target visual card count (used when deckType is "visual" or "both")
+        deckType:
+          type: string
+          enum: [text, visual, both]
+          description: Whether to create a text-only deck, a visual deck, or both as separate decks
         parentId:
           type: ["integer", "null"]
         pageImages:
@@ -344,6 +352,8 @@ components:
       properties:
         deck:
           $ref: "#/components/schemas/Deck"
+        visualDeck:
+          $ref: "#/components/schemas/Deck"
         cards:
           type: array
           items:
@@ -351,7 +361,6 @@ components:
         generatedCount:
           type: integer
       required:
-        - deck
         - cards
         - generatedCount
 

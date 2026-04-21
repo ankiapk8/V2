@@ -55,17 +55,35 @@ export interface UpdateCardBody {
   tags?: string | null;
 }
 
+/**
+ * Whether to create a text-only deck, a visual deck, or both as separate decks
+ */
+export type GenerateCardsBodyDeckType =
+  (typeof GenerateCardsBodyDeckType)[keyof typeof GenerateCardsBodyDeckType];
+
+export const GenerateCardsBodyDeckType = {
+  text: "text",
+  visual: "visual",
+  both: "both",
+} as const;
+
 export interface GenerateCardsBody {
   text: string;
   deckName: string;
+  /** Target text card count (used when deckType is "text" or "both") */
   cardCount?: number;
+  /** Target visual card count (used when deckType is "visual" or "both") */
+  visualCardCount?: number;
+  /** Whether to create a text-only deck, a visual deck, or both as separate decks */
+  deckType?: GenerateCardsBodyDeckType;
   /** @nullable */
   parentId?: number | null;
   pageImages?: string[];
 }
 
 export interface GenerateCardsResponse {
-  deck: Deck;
+  deck?: Deck;
+  visualDeck?: Deck;
   cards: Card[];
   generatedCount: number;
 }

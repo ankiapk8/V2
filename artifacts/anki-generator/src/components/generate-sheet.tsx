@@ -12,7 +12,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { Progress } from "@/components/ui/progress";
-import { UploadCloud, X, CheckCircle2, AlertCircle, Loader2, FileText, Sparkles, FolderOpen, ImageIcon, ArrowLeft } from "lucide-react";
+import { UploadCloud, X, CheckCircle2, AlertCircle, Loader2, FileText, Sparkles, FolderOpen, ImageIcon, ArrowLeft, Type, Layers } from "lucide-react";
 import { extractPdf, isPdfFile, isTextFile } from "@/lib/pdf-extraction";
 import { apiUrl } from "@/lib/utils";
 import type { Deck } from "@workspace/api-client-react/src/generated/api.schemas";
@@ -55,6 +55,8 @@ function getProgressPhase(message: string): "text" | "images" | "ocr" | "server"
 
 type FileStatus = "extracting" | "ready" | "error" | "generating" | "done";
 
+type DeckType = "text" | "visual" | "both";
+
 type FileEntry = {
   id: string;
   name: string;
@@ -64,6 +66,8 @@ type FileEntry = {
   progress: string;
   deckName: string;
   cardCount: number | "";
+  visualCardCount: number | "";
+  deckType: DeckType;
   generatedCount?: number;
   generatingPercent?: number;
   generatingMessage?: string;
@@ -117,6 +121,7 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
   const [manualText, setManualText] = useState("");
   const [manualDeckName, setManualDeckName] = useState("");
   const [manualCardCount, setManualCardCount] = useState<number | "">("");
+  // Manual text never has page images — deck type is forced to "text"
   const [parentId, setParentId] = useState<string>(defaultParentId?.toString() ?? "none");
 
   const [emptyName, setEmptyName] = useState("");
@@ -158,7 +163,7 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
     }
     const id = `${file.name}-${Date.now()}-${Math.random()}`;
     const baseName = file.name.replace(/\.[^.]+$/, "");
-    setFiles(prev => [...prev, { id, name: file.name, status: "extracting", text: "", pageImages: [], progress: "Reading…", deckName: baseName, cardCount: "" }]);
+    setFiles(prev => [...prev, { id, name: file.name, status: "extracting", text: "", pageImages: [], progress: "Reading…", deckName: baseName, cardCount: "", visualCardCount: "", deckType: "both" }]);
     try {
       if (isTxt) {
         const text = await file.text();
@@ -166,7 +171,7 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
       } else {
         const buffer = await file.arrayBuffer();
         const { text, pageImages } = await extractPdf(buffer, (progress) => throttledProgressUpdate(id, progress));
-        updateFile(id, { status: "ready", text, pageImages, progress: "" });
+        updateFile(id, { status: "ready", text, pageImages, progress: "", deckType: pageImages.length > 0 ? "both" : "text" });
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Extraction failed";
@@ -205,11 +210,22 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
     return "Generation failed";
   };
 
-  const generateOne = (text: string, deckName: string, cardCount: number | "", pid: number | null, pageImages?: string[], fileId?: string): Promise<number> =>
+  const generateOne = (
+    text: string,
+    deckName: string,
+    cardCount: number | "",
+    pid: number | null,
+    pageImages?: string[],
+    fileId?: string,
+    deckType: DeckType = "text",
+    visualCardCount: number | "" = "",
+  ): Promise<number> =>
     new Promise((resolve, reject) => {
       const body = JSON.stringify({
         text, deckName,
         cardCount: cardCount ? Number(cardCount) : undefined,
+        visualCardCount: visualCardCount ? Number(visualCardCount) : undefined,
+        deckType,
         parentId: pid,
         pageImages: pageImages && pageImages.length > 0 ? pageImages : undefined,
       });
@@ -265,8 +281,8 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
     setIsGeneratingAll(true);
     let ok = 0, fail = 0;
     const targets = [
-      ...readyFiles.map(f => ({ id: f.id, text: f.text, deckName: f.deckName, cardCount: f.cardCount, pageImages: f.pageImages })),
-      ...(hasManual ? [{ id: undefined, text: manualText, deckName: manualDeckName, cardCount: manualCardCount, pageImages: [] as string[] }] : []),
+      ...readyFiles.map(f => ({ id: f.id, text: f.text, deckName: f.deckName, cardCount: f.cardCount, pageImages: f.pageImages, deckType: f.deckType, visualCardCount: f.visualCardCount })),
+      ...(hasManual ? [{ id: undefined, text: manualText, deckName: manualDeckName, cardCount: manualCardCount, pageImages: [] as string[], deckType: "text" as DeckType, visualCardCount: "" as number | "" }] : []),
     ];
 
     for (let i = 0; i < targets.length; i++) {
@@ -278,7 +294,7 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
       }
       if (t.id) updateFile(t.id, { status: "generating", progress: "Generating…", generatingPercent: 0, generatingMessage: "Starting…" });
       try {
-        const count = await generateOne(t.text, t.deckName, t.cardCount, resolvedParentId, t.pageImages, t.id);
+        const count = await generateOne(t.text, t.deckName, t.cardCount, resolvedParentId, t.pageImages, t.id, t.deckType, t.visualCardCount);
         if (t.id) updateFile(t.id, { status: "done", progress: "", generatedCount: count });
         ok++;
       } catch (error) {
@@ -531,29 +547,82 @@ export function GenerateSheet({ open, onOpenChange, onDone, defaultParentId }: G
                   )}
 
                   {(f.status === "ready" || f.status === "error") && (
-                    <div className="space-y-1.5">
-                      <div className="grid grid-cols-2 gap-2">
-                        <div className="space-y-1">
-                          <Label className="text-xs">Deck Name</Label>
-                          <Input value={f.deckName} onChange={e => updateFile(f.id, { deckName: e.target.value })} className="h-7 text-xs" placeholder="e.g. Chapter 1" disabled={isGeneratingAll} />
-                        </div>
-                        <div className="space-y-1">
-                          <Label className="text-xs flex items-center justify-between gap-1">
-                            <span>Target Cards</span>
-                            <span className="text-[10px] font-normal text-muted-foreground">
-                              ~{estimatedCards(f.text, f.pageImages.length, f.cardCount)} likely
-                            </span>
-                          </Label>
-                          <Input type="number" value={f.cardCount} onChange={e => updateFile(f.id, { cardCount: e.target.value ? Number(e.target.value) : "" })} className="h-7 text-xs" placeholder={`e.g. ${DEFAULT_TARGET_CARDS}`} min="1" max="200" disabled={isGeneratingAll} />
-                        </div>
+                    <div className="space-y-2">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Deck Name</Label>
+                        <Input value={f.deckName} onChange={e => updateFile(f.id, { deckName: e.target.value })} className="h-7 text-xs" placeholder="e.g. Chapter 1" disabled={isGeneratingAll} />
                       </div>
+
+                      {f.pageImages.length > 0 && (
+                        <div className="space-y-1">
+                          <Label className="text-xs">Deck Type</Label>
+                          <div className="grid grid-cols-3 gap-1 p-0.5 rounded-md bg-muted/60">
+                            {([
+                              { value: "text" as DeckType, label: "Text only", icon: Type },
+                              { value: "visual" as DeckType, label: "Visual", icon: ImageIcon },
+                              { value: "both" as DeckType, label: "Both", icon: Layers },
+                            ]).map(opt => {
+                              const Icon = opt.icon;
+                              const active = f.deckType === opt.value;
+                              return (
+                                <button
+                                  key={opt.value}
+                                  type="button"
+                                  disabled={isGeneratingAll}
+                                  onClick={() => updateFile(f.id, { deckType: opt.value })}
+                                  className={`flex items-center justify-center gap-1 h-7 rounded text-[11px] font-medium transition-colors disabled:opacity-50 ${
+                                    active
+                                      ? "bg-background shadow-sm text-foreground"
+                                      : "text-muted-foreground hover:text-foreground"
+                                  }`}
+                                >
+                                  <Icon className="h-3 w-3" />
+                                  {opt.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {f.deckType === "both" && (
+                            <p className="text-[10px] text-muted-foreground">
+                              Creates two decks: <span className="font-medium">"{f.deckName} – Text"</span> and <span className="font-medium">"{f.deckName} – Visual"</span>.
+                            </p>
+                          )}
+                        </div>
+                      )}
+
+                      <div className={`grid gap-2 ${f.pageImages.length > 0 && (f.deckType === "both" || f.deckType === "visual") && f.deckType !== "visual" ? "grid-cols-2" : "grid-cols-1"}`}>
+                        {(f.deckType === "text" || f.deckType === "both") && (
+                          <div className="space-y-1">
+                            <Label className="text-xs flex items-center justify-between gap-1">
+                              <span className="flex items-center gap-1"><Type className="h-3 w-3" />Text Cards</span>
+                              <span className="text-[10px] font-normal text-muted-foreground">
+                                ~{estimatedCards(f.text, 0, f.cardCount)} likely
+                              </span>
+                            </Label>
+                            <Input type="number" value={f.cardCount} onChange={e => updateFile(f.id, { cardCount: e.target.value ? Number(e.target.value) : "" })} className="h-7 text-xs" placeholder={`e.g. ${DEFAULT_TARGET_CARDS}`} min="1" max="200" disabled={isGeneratingAll} />
+                          </div>
+                        )}
+                        {(f.deckType === "visual" || f.deckType === "both") && f.pageImages.length > 0 && (
+                          <div className="space-y-1">
+                            <Label className="text-xs flex items-center justify-between gap-1">
+                              <span className="flex items-center gap-1"><ImageIcon className="h-3 w-3" />Visual Cards</span>
+                              <span className="text-[10px] font-normal text-muted-foreground">
+                                up to {Math.min(f.pageImages.length * 3, 200)}
+                              </span>
+                            </Label>
+                            <Input type="number" value={f.visualCardCount} onChange={e => updateFile(f.id, { visualCardCount: e.target.value ? Number(e.target.value) : "" })} className="h-7 text-xs" placeholder={`e.g. ${Math.min(f.pageImages.length * 2, 30)}`} min="1" max="200" disabled={isGeneratingAll} />
+                          </div>
+                        )}
+                      </div>
+
                       {(() => {
-                        const capacity = estimateCardCapacity(f.text, f.pageImages.length);
+                        if (f.deckType === "visual") return null;
+                        const capacity = estimateCardCapacity(f.text, 0);
                         const target = typeof f.cardCount === "number" ? f.cardCount : DEFAULT_TARGET_CARDS;
                         if (target > capacity && capacity > 0) {
                           return (
                             <p className="text-[10px] text-amber-600 dark:text-amber-500">
-                              Content likely only supports ~{capacity} cards — target will be capped.
+                              Text content likely only supports ~{capacity} cards — target will be capped.
                             </p>
                           );
                         }
