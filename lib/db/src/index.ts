@@ -44,6 +44,20 @@ export async function ensureDatabaseSchema(): Promise<void> {
     ALTER TABLE "cards" ADD COLUMN IF NOT EXISTS "created_at" timestamp with time zone DEFAULT now() NOT NULL;
     ALTER TABLE "cards" ADD COLUMN IF NOT EXISTS "updated_at" timestamp with time zone DEFAULT now() NOT NULL;
 
+    CREATE TABLE IF NOT EXISTS "generations" (
+      "id" serial PRIMARY KEY NOT NULL,
+      "deck_name" text NOT NULL,
+      "deck_type" text NOT NULL,
+      "status" text NOT NULL,
+      "cards_generated" integer NOT NULL DEFAULT 0,
+      "page_count" integer NOT NULL DEFAULT 0,
+      "duration_ms" integer NOT NULL DEFAULT 0,
+      "custom_prompt" text,
+      "error_message" text,
+      "started_at" timestamp with time zone DEFAULT now() NOT NULL,
+      "completed_at" timestamp with time zone
+    );
+
     DO $$
     BEGIN
       IF NOT EXISTS (
